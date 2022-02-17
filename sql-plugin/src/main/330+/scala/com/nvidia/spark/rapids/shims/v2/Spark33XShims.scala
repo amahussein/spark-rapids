@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.orc.OrcScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.internal.SQLConf
 
 trait Spark33XShims extends Spark33XFileOptionsShims {
   override def neverReplaceShowCurrentNamespaceCommand: ExecRule[_ <: SparkPlan] = null
@@ -44,6 +45,8 @@ trait Spark33XShims extends Spark33XFileOptionsShims {
       metadataColumns: Seq[AttributeReference]): RDD[InternalRow] = {
     new FileScanRDD(sparkSession, readFunction, filePartitions, readDataSchema, metadataColumns)
   }
+
+  override def isAnsiFailOnElementNotExists(): Boolean = SQLConf.get.strictIndexOperator
 
   override def getParquetFilters(
       schema: MessageType,

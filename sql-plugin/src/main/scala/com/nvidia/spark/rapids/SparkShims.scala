@@ -97,6 +97,7 @@ trait SparkShims {
   def int96ParquetRebaseReadKey: String
   def int96ParquetRebaseWriteKey: String
   def isCastingStringToNegDecimalScaleSupported: Boolean = true
+  def isAnsiFailOnElementNotExists(): Boolean = false
 
   def getParquetFilters(
     schema: MessageType,

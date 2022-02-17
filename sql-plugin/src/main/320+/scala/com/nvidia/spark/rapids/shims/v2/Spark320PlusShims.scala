@@ -145,6 +145,8 @@ trait Spark320PlusShims extends SparkShims with RebaseShims with Logging {
       enableAddPartitions = true,
       enableDropPartitions = false)
 
+  override def isAnsiFailOnElementNotExists(): Boolean = SQLConf.get.ansiEnabled
+  
   override def shouldFailDivOverflow(): Boolean = SQLConf.get.ansiEnabled
 
   override def leafNodeDefaultParallelism(ss: SparkSession): Int = {
@@ -377,7 +379,7 @@ trait Spark320PlusShims extends SparkShims with RebaseShims with Logging {
         ("ordinal", TypeSig.lit(TypeEnum.INT), TypeSig.INT)),
       (in, conf, p, r) => new GpuGetArrayItemMeta(in, conf, p, r) {
         override def convertToGpu(arr: Expression, ordinal: Expression): GpuExpression =
-          GpuGetArrayItem(arr, ordinal, SQLConf.get.ansiEnabled)
+          GpuGetArrayItem(arr, ordinal, isAnsiFailOnElementNotExists())
       }),
     GpuOverrides.expr[GetMapValue](
       "Gets Value from a Map based on a key",
@@ -430,7 +432,7 @@ trait Spark320PlusShims extends SparkShims with RebaseShims with Logging {
         }
 
         override def convertToGpu(lhs: Expression, rhs: Expression): GpuExpression = {
-          GpuElementAt(lhs, rhs, SQLConf.get.ansiEnabled)
+          GpuElementAt(lhs, rhs, isAnsiFailOnElementNotExists())
         }
       }),
     GpuOverrides.expr[Literal](

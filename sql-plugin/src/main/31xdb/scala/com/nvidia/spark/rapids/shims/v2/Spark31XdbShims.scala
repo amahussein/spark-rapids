@@ -274,7 +274,7 @@ abstract class Spark31XdbShims extends Spark31XdbShimsBase with Logging {
       ("ordinal", TypeSig.lit(TypeEnum.INT), TypeSig.INT)),
     (in, conf, p, r) => new GpuGetArrayItemMeta(in, conf, p, r){
       override def convertToGpu(arr: Expression, ordinal: Expression): GpuExpression =
-        GpuGetArrayItem(arr, ordinal, SQLConf.get.ansiEnabled)
+        GpuGetArrayItem(arr, ordinal, isAnsiFailOnElementNotExists())
     }),
     GpuOverrides.expr[GetMapValue](
       "Gets Value from a Map based on a key",
@@ -326,7 +326,7 @@ abstract class Spark31XdbShims extends Spark31XdbShimsBase with Logging {
           checks.tag(this)
         }
         override def convertToGpu(lhs: Expression, rhs: Expression): GpuExpression = {
-          GpuElementAt(lhs, rhs, SQLConf.get.ansiEnabled)
+          GpuElementAt(lhs, rhs, isAnsiFailOnElementNotExists())
         }
       }),
     GpuScalaUDFMeta.exprMeta

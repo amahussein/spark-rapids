@@ -128,4 +128,6 @@ trait Spark31XdbShimsBase extends SparkShims {
   }
 
   override def shouldFallbackOnAnsiTimestamp(): Boolean = false
+
+  override def isAnsiFailOnElementNotExists(): Boolean = SQLConf.get.ansiEnabled
 }
