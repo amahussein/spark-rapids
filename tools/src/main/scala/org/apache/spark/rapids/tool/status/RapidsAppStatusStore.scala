@@ -47,4 +47,8 @@ class RapidsAppStatusStore(
   def getGeneralConfig: Map[String, String] = {
     Map("Plugin Enabled" -> isRapidsEnabled().toString)
   }
+
+  def createRapidsProfAppInfo(logLines: Seq[String]): Unit = {
+    val myAppID = applicationInfo().id
+  }
 }
