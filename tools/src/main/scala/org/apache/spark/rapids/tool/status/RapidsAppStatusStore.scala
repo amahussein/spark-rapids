@@ -48,7 +48,9 @@ class RapidsAppStatusStore(
     Map("Plugin Enabled" -> isRapidsEnabled().toString)
   }
 
-  def createRapidsProfAppInfo(logLines: Seq[String]): Unit = {
-    val myAppID = applicationInfo().id
+  def getRapidsProfAppInfo(logLines: Seq[String]): Unit = {
+    val appProcessContainer = new RapidsAppInfoLogProcessor()
+    // process the events one by one
+    appProcessContainer.processLogLines(logLines)
   }
 }

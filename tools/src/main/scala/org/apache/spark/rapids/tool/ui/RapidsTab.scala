@@ -16,7 +16,11 @@
 
 package org.apache.spark.rapids.tool.ui
 
-import org.apache.spark.rapids.tool.status.RapidsAppStatusStore
+import javax.servlet.http.HttpServletRequest
+
+import com.nvidia.spark.rapids.tool.profiling.{Analysis, ApplicationSummaryInfo, CollectInformation, HealthCheck}
+
+import org.apache.spark.rapids.tool.status.{RapidsAppInfoLogProcessor, RapidsAppStatusStore, UIUtils}
 import org.apache.spark.ui.{SparkUI, SparkUITab}
 
 class RapidsTab(
@@ -26,6 +30,40 @@ class RapidsTab(
   attachPage(new RapidsPage(this, parent.conf, store))
   parent.attachTab(this)
   parent.addStaticHandler(RapidsTab.STATIC_RESOURCE_DIR, "/static/rapids")
+
+  def getRapidsProfileInfoForApp(
+      request: HttpServletRequest, appID: String):
+        (RapidsAppInfoLogProcessor, CollectInformation, ApplicationSummaryInfo) = {
+    val logLines = UIUtils.getSeqAppLogEventsByRest(request, appID)
+    val appProcessContainer = new RapidsAppInfoLogProcessor()
+    appProcessContainer.processLogLines(logLines)
+    val apps = Seq(appProcessContainer)
+    val collect = new CollectInformation(apps)
+    val appInfo = collect.getAppInfo
+    val dsInfo = collect.getDataSourceInfo
+    val execInfo = collect.getExecutorInfo
+    val jobInfo = collect.getJobInfo
+    val rapidsProps = collect.getProperties(rapidsOnly = true)
+    val sparkProps = collect.getProperties(rapidsOnly = false)
+    val rapidsJar = collect.getRapidsJARInfo
+    val sqlMetrics = collect.getSQLPlanMetrics
+    val analysis = new Analysis(apps)
+    val jsMetAgg = analysis.jobAndStageMetricsAggregation()
+    val sqlTaskAggMetrics = analysis.sqlMetricsAggregation()
+    val durAndCpuMet = analysis.sqlMetricsAggregationDurationAndCpuTime()
+    val skewInfo = analysis.shuffleSkewCheck()
+    val healthCheck = new HealthCheck(apps)
+    val failedTasks = healthCheck.getFailedTasks
+    val failedStages = healthCheck.getFailedStages
+    val failedJobs = healthCheck.getFailedJobs
+    val removedBMs = healthCheck.getRemovedBlockManager
+    val removedExecutors = healthCheck.getRemovedExecutors
+    val unsupportedOps = healthCheck.getPossibleUnsupportedSQLPlan
+    (appProcessContainer, collect, ApplicationSummaryInfo(appInfo, dsInfo, execInfo, jobInfo,
+      rapidsProps, rapidsJar, sqlMetrics, jsMetAgg, sqlTaskAggMetrics, durAndCpuMet, skewInfo,
+      failedTasks, failedStages, failedJobs, removedBMs, removedExecutors, unsupportedOps,
+      sparkProps))
+  }
 }
 
 object RapidsTab {

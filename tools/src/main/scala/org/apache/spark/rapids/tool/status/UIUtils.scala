@@ -100,19 +100,4 @@ object UIUtils extends Logging {
     logInfo(s"Found All the Logs ${allFiles.size}")
     allFiles
   }
-
-//  def getSeqSparkLogEventsByRest(
-//      request: HttpServletRequest, appID: String): Seq[SparkListenerEvent] = {
-//    val (code, resultOpt, error) = connectAndGetInputStream(constructURLForLogFile(request, appID))
-//    val zipStream = new ZipInputStream(resultOpt.get)
-//    var allFiles = new ListBuffer[String]()
-//    var entry = zipStream.getNextEntry
-//    while (entry != null) {
-//      val actual = new String(ByteStreams.toByteArray(zipStream), StandardCharsets.UTF_8)
-//      allFiles += actual
-//      entry = zipStream.getNextEntry
-//    }
-//    logInfo(s"Found All the Logs")
-//    allFiles
-//  }
 }

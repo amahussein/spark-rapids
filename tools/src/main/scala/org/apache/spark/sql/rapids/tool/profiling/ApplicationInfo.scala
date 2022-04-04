@@ -189,7 +189,7 @@ class ApplicationInfo(
     eLogInfo: EventLogInfo,
     val index: Int)
   extends AppBase(Some(eLogInfo), Some(hadoopConf)) with Logging {
-
+  def lazyProcessing: Boolean = false
   // executorId to executor info
   val executorIdToInfo = new HashMap[String, ExecutorInfoClass]()
   // resourceprofile id to resource profile info
@@ -235,11 +235,17 @@ class ApplicationInfo(
 
   private lazy val eventProcessor =  new EventsProcessor(this)
 
-  // Process all events
-  processEvents()
-  // Process SQL Plan Metrics after all events are processed
-  processSQLPlanMetrics()
-  aggregateAppInfo
+  def launchProcessing(): Unit = {
+    // Process all events
+    processEvents()
+    // Process SQL Plan Metrics after all events are processed
+    processSQLPlanMetrics()
+    aggregateAppInfo
+  }
+
+  if (!lazyProcessing) {
+    launchProcessing
+  }
 
   override def processEvent(event: SparkListenerEvent) = {
     eventProcessor.processAnyEvent(event)
@@ -324,7 +330,7 @@ class ApplicationInfo(
     }
   }
 
-  private def aggregateAppInfo: Unit = {
+  protected def aggregateAppInfo: Unit = {
     if (this.appInfo != null) {
       val res = this.appInfo
 
