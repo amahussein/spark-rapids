@@ -20,14 +20,14 @@ import javax.servlet.http.HttpServletRequest
 
 import scala.xml.{Node, Unparsed}
 
-import com.nvidia.spark.rapids.tool.profiling.ApplicationSummaryInfo
+import com.nvidia.spark.rapids.tool.profiling.{ApplicationSummaryInfo, ProfileResult}
 import org.json4s.DefaultFormats
 import org.json4s.jackson.Serialization
-
 import org.apache.spark.SparkConf
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.rapids.tool.status.RapidsAppStatusStore
-import org.apache.spark.ui.{UIUtils => SparkUIUtils, WebUIPage}
+import org.apache.spark.ui.{WebUIPage, UIUtils => SparkUIUtils}
 import org.apache.spark.util.Utils
 
 class RapidsPage(
@@ -39,7 +39,7 @@ class RapidsPage(
   private def propertyHeader = Seq("Name", "Value")
   private def headerClasses = Seq("sorttable_alpha", "sorttable_alpha")
 
-  private def makeTestJS(appsummaryInfo: ApplicationSummaryInfo): String = {
+  private def dataSourceInfoJson(appsummaryInfo: ApplicationSummaryInfo): String = {
     implicit val formats = DefaultFormats
     val jSonString = Serialization.write(appsummaryInfo.dsInfo)
     val groupJsonArrayAsStr =
@@ -49,12 +49,32 @@ class RapidsPage(
     groupJsonArrayAsStr
   }
 
+  private def jobInfoJson(appsummaryInfo: ApplicationSummaryInfo): String = {
+    implicit val formats = DefaultFormats
+    val jSonString = Serialization.write(appsummaryInfo.jobInfo)
+    val groupJsonArrayAsStr =
+      s"""
+         |${jSonString}
+        """.stripMargin
+    groupJsonArrayAsStr
+  }
+
+  private def getJsonData(profResultData: Seq[ProfileResult]): String = {
+    implicit val formats = DefaultFormats
+    val jSonString = Serialization.write(profResultData)
+    val groupJsonArrayAsStr =
+      s"""
+         |${jSonString}
+        """.stripMargin
+    groupJsonArrayAsStr
+  }
+
   override def render(request: HttpServletRequest): Seq[Node] = {
     val appInfo = rapidsStore.applicationInfo
-    val (rapidsAppInfoObj, rapidsCollectInfoObj, rapidsSummaryInfo) =
+    val (rapidsAppInfoObj, rapidsCollectInfoObj, rapidsSummary) =
       parent.getRapidsProfileInfoForApp(request, appInfo.id)
-    val rapidsAppInfo = rapidsSummaryInfo.appInfo.head
-    val rapidsAppPropsInfo = rapidsSummaryInfo.rapidsProps
+    val rapidsAppInfo = rapidsSummary.appInfo.head
+    val rapidsAppPropsInfo = rapidsSummary.rapidsProps
     val tableRows = rapidsAppPropsInfo.map(_.convertToSeq).map(a => a.head -> a.last)
     val rapidsInfo = Map(
       "plugin Enabled" -> rapidsAppInfo.pluginEnabled.toString,
@@ -68,7 +88,7 @@ class RapidsPage(
     val content = {
       <script src={SparkUIUtils.prependBaseUri(
         request, "/static/historypage-common.js")}></script> ++
-        <script src={SparkUIUtils.prependBaseUri(request, "/static/utils.js")}></script> ++
+      <script src={SparkUIUtils.prependBaseUri(request, "/static/utils.js")}></script> ++
           <div>
             <div class="container-fluid">
               <span>
@@ -94,7 +114,6 @@ class RapidsPage(
                 <div class="aggregated-sparkProperties collapsible-table">
                   {rapidsPropertiesTable}
                 </div>
-
                 <span class="collapse-aggregated-dataSourceReport collapse-table"
                       onClick="collapseTable('collapse-aggregated-dataSourceReport',
             'aggregated-dataSourceReport')">
@@ -110,9 +129,29 @@ class RapidsPage(
                   <div id="datasource-report"></div> ++
                   <script src={SparkUIUtils.prependBaseUri(
                     request, "/static/rapids/datasource-report.js")}></script> ++
-                    <script type="text/javascript">
-                      {Unparsed(s"setDataSourceInfoArr(${makeTestJS(rapidsSummaryInfo)});")}
-                    </script>
+                  <script type="text/javascript">
+                      {Unparsed(s"setDataSourceInfoArr(${getJsonData(rapidsSummary.dsInfo)});")}
+                  </script>
+                }
+                </div>
+                <span class="collapse-aggregated-jobinfoReport collapse-table"
+                      onClick="collapseTable('collapse-aggregated-jobinfoReport',
+            'aggregated-jobinfoReport')">
+                  <h4>
+                    <span class="collapse-table-arrow arrow-open"></span>
+                    <a>Job Information</a>
+                  </h4>
+                </span>
+                <div class="aggregated-jobinfoReport collapsible-table">
+                {
+                  <script src={SparkUIUtils.prependBaseUri(
+                    request, "/static/dataTables.rowsGroup.js")}></script> ++
+                  <div id="jobinfo-report"></div> ++
+                  <script src={SparkUIUtils.prependBaseUri(
+                    request, "/static/rapids/jobinfo-report.js")}></script> ++
+                  <script type="text/javascript">
+                    {Unparsed(s"setJobInfoArr(${getJsonData(rapidsSummary.jobInfo)});")}
+                  </script>
                 }
                 </div>
               </span>
