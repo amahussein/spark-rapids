@@ -25,22 +25,16 @@ function getColumnIndex(columns, columnName) {
     return -1;
 }
 
-var datasourceReportData= [{
-    "appIndex"    :  "1",
-    "sqlID"       :  "24",
-    "format"      :  "Parquet",
-    "location" : "InMemoryFileIndex[hdfs://rl-r7525-d32-u38.raplab.nvidia.com:9000/data/tpcds_sf3000-parquet/useDecimal=true,useDate=true,filterNull=false/catalog_sales]",
-    "pushedFilters" : "[IsNotNull(cs_bill_customer_sk)]",
-    "schema" : "cs_bill_customer_sk:int"
-},]
+/* An array of DataSourceInfo */
+var datasourceReportData = [];
 
-var debugMessage = "";
-
-function dumpPropertiesRows(val) {
-    debugMessage = val;
+function setDataSourceInfoArr(dsInfoArray) {
+    console.log(dsInfoArray)
+    datasourceReportData = dsInfoArray
 }
 
 $(document).ready(function() {
+    $.blockUI({ message: '<h3>Loading RAPIDS profiling summary...</h3>'});
     var datasourceReport = $("#datasource-report");
     setDataTableDefaults();
     var data = {
@@ -70,6 +64,6 @@ $(document).ready(function() {
         apps.DataTable(conf);
         sibling.after(datasourceReport);
         $('#datasource-report [data-toggle="tooltip"]').tooltip();
+        $.unblockUI();
     });
-    console.log(debugMessage)
 });

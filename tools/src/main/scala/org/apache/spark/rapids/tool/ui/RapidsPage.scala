@@ -18,11 +18,11 @@ package org.apache.spark.rapids.tool.ui
 
 import javax.servlet.http.HttpServletRequest
 
-import scala.xml.Node
+import scala.xml.{Node, Unparsed}
 
-import org.json4s
-
-//import org.apache.commons.text.StringEscapeUtils
+import com.nvidia.spark.rapids.tool.profiling.ApplicationSummaryInfo
+import org.json4s.DefaultFormats
+import org.json4s.jackson.Serialization
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
@@ -39,16 +39,23 @@ class RapidsPage(
   private def propertyHeader = Seq("Name", "Value")
   private def headerClasses = Seq("sorttable_alpha", "sorttable_alpha")
 
+  private def makeTestJS(appsummaryInfo: ApplicationSummaryInfo): String = {
+    implicit val formats = DefaultFormats
+    val jSonString = Serialization.write(appsummaryInfo.dsInfo)
+    val groupJsonArrayAsStr =
+      s"""
+         |${jSonString}
+        """.stripMargin
+    groupJsonArrayAsStr
+  }
+
   override def render(request: HttpServletRequest): Seq[Node] = {
     val appInfo = rapidsStore.applicationInfo
     val (rapidsAppInfoObj, rapidsCollectInfoObj, rapidsSummaryInfo) =
       parent.getRapidsProfileInfoForApp(request, appInfo.id)
     val rapidsAppInfo = rapidsSummaryInfo.appInfo.head
     val rapidsAppPropsInfo = rapidsSummaryInfo.rapidsProps
-    // val tableHeaders = rapidsAppPropsInfo.head.outputHeaders
     val tableRows = rapidsAppPropsInfo.map(_.convertToSeq).map(a => a.head -> a.last)
-    // val dsInfoHeaders = rapidsSummaryInfo.dsInfo.head.outputHeaders
-    val dsRows = rapidsSummaryInfo.dsInfo.map(_.toString)
     val rapidsInfo = Map(
       "plugin Enabled" -> rapidsAppInfo.pluginEnabled.toString,
       "spark Version" -> rapidsAppInfo.sparkVersion)
@@ -98,13 +105,14 @@ class RapidsPage(
                 </span>
                 <div class="aggregated-dataSourceReport collapsible-table">
                 {
-
                   <script src={SparkUIUtils.prependBaseUri(
                     request, "/static/dataTables.rowsGroup.js")}></script> ++
                   <div id="datasource-report"></div> ++
                   <script src={SparkUIUtils.prependBaseUri(
                     request, "/static/rapids/datasource-report.js")}></script> ++
-                  <script>dumpPropertiesRows('{dsRows}')</script>
+                    <script type="text/javascript">
+                      {Unparsed(s"setDataSourceInfoArr(${makeTestJS(rapidsSummaryInfo)});")}
+                    </script>
                 }
                 </div>
               </span>
