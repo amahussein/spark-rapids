@@ -182,6 +182,7 @@ $(document).ready(function() {
       var conf = {
         "data": array,
         "columns": [
+          {name: 'version', data: 'version' },
           {
             name: 'appId',
             type: "appid-numeric",
@@ -204,7 +205,6 @@ $(document).ready(function() {
             data: 'action',
             render: (action, _ignored_type, _ignored_row) => (action == 0? `<a href="${_ignored_row.log}" class="btn btn-info btn-mini">Download</a>` : `<a href="${_ignored_row.compareUrl}" class="btn btn-info btn-mini">Compare</a>`)
           },
-          {name: 'version', data: 'version' },
         ],
         "aoColumnDefs": [
           {

@@ -17,15 +17,20 @@
 
 /* An array of JobInfo */
 var jobInfoReportData = [];
+var showAppIndexColumnForJobs = false;
 
 function setJobInfoArr(dsInfoArray) {
   console.log(dsInfoArray)
   jobInfoReportData = dsInfoArray
 }
 
+function enableAppIndexForJobs() {
+  showAppIndexColumnForJobs = true;
+}
+
 function generateJobInfoReport() {
   var datasourceReport = $("#jobinfo-report");
-  var showAppIndexColumn = false;
+
   var hasMultipleStages = false;
   var jobArray = [];
   for (var i in jobInfoReportData) {
@@ -50,7 +55,7 @@ function generateJobInfoReport() {
     "uiroot": uiRoot,
     "applications": jobArray,
     "hasMultipleStages": hasMultipleStages,
-    "showAppIndexColumn": showAppIndexColumn
+    "showAppIndexColumn": showAppIndexColumnForJobs
   };
   $.get(uiRoot + "/static/rapids/jobinfo-report-template.html", function (template) {
     var sibling = datasourceReport.prev();
@@ -81,7 +86,7 @@ function generateJobInfoReport() {
       ],
       "aoColumnDefs": [
         {
-          aTargets: showAppIndexColumn ? [0, 1] : [0],
+          aTargets: showAppIndexColumnForJobs ? [0, 1] : [0],
           fnCreatedCell: (nTd, _ignored_sData, _ignored_oData, _ignored_iRow, _ignored_iCol) => {
             if (hasMultipleStages) {
               $(nTd).css('background-color', '#fff');
@@ -93,14 +98,14 @@ function generateJobInfoReport() {
       "autoWidth": false,
       "paging": jobArray.length > 20
     };
-    if (hasMultipleStages && !showAppIndexColumn) {
+    if (hasMultipleStages && !showAppIndexColumnForJobs) {
       conf.rowsGroup = [
         'appIndex:name',
         'jobID:name'
       ];
     }
     var defaultSortColumn = "jobID";
-    if (!showAppIndexColumn) {
+    if (!showAppIndexColumnForJobs) {
       conf.columns = removeColumnByName(conf.columns, "appIndex");
     }
     conf.order = [[getColumnIndex(conf.columns, defaultSortColumn), "desc"]];

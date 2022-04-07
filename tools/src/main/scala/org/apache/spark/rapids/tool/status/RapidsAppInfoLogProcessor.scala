@@ -25,8 +25,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.rapids.tool.profiling.ApplicationInfo
 import org.apache.spark.util.JsonProtocol
 
-class RapidsAppInfoLogProcessor() extends ApplicationInfo(
-  new Configuration(), ApacheSparkEventLog(new Path("/tmp")), 1) with Logging {
+class RapidsAppInfoLogProcessor(currIndex: Int = 1) extends ApplicationInfo(
+  new Configuration(), ApacheSparkEventLog(new Path("/tmp")), currIndex) with Logging {
   // Do not process event on initialization
   override def lazyProcessing: Boolean = true
 

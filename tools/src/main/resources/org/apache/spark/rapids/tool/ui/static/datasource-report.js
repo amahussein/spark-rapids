@@ -30,21 +30,26 @@ function removeColumnByName(columns, columnName) {
 
 /* An array of DataSourceInfo */
 var datasourceReportData = [];
+var showAppIndexColumnForDS = false;
 
 function setDataSourceInfoArr(dsInfoArray) {
   console.log(dsInfoArray)
   datasourceReportData = dsInfoArray
 }
 
+function enableAppIndexForDS() {
+  showAppIndexColumnForDS = true;
+}
+
 function generateDataSourceReport() {
   $.blockUI({message: '<h3>Loading RAPIDS profiling summary...</h3>'});
-  var showAppIndexColumn = false;
+
   var datasourceReport = $("#datasource-report");
   setDataTableDefaults();
   var data = {
     "uiroot": uiRoot,
     "applications": datasourceReportData,
-    "showAppIndexColumn": showAppIndexColumn,
+    "showAppIndexColumn": showAppIndexColumnForDS,
   };
 
   $.get(uiRoot + "/static/rapids/datasource-report-template.html", function (template) {
@@ -66,7 +71,7 @@ function generateDataSourceReport() {
       "paging": datasourceReportData.length > 20
     };
     var defaultSortColumn = "sqlID";
-    if (!showAppIndexColumn) {
+    if (!showAppIndexColumnForDS) {
       conf.columns = removeColumnByName(conf.columns, "appIndex");
     }
     conf.order = [[getColumnIndex(conf.columns, defaultSortColumn), "desc"]];

@@ -21,6 +21,7 @@ import javax.servlet.http.HttpServletRequest
 import scala.xml.{Node, Unparsed}
 
 import com.nvidia.spark.rapids.tool.profiling.ProfileResult
+
 import org.json4s.DefaultFormats
 import org.json4s.jackson.Serialization
 
