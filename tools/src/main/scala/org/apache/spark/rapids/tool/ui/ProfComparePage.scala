@@ -16,23 +16,23 @@
 
 package org.apache.spark.rapids.tool.ui
 
+import javax.servlet.http.HttpServletRequest
+
+import scala.xml.Node
+
 import org.apache.spark.SparkConf
+import org.apache.spark.internal.Logging
 import org.apache.spark.rapids.tool.status.RapidsAppStatusStore
-import org.apache.spark.scheduler.SparkListener
-import org.apache.spark.status.{AppHistoryServerPlugin, ElementTrackingStore}
-import org.apache.spark.ui.SparkUI
+import org.apache.spark.ui.{UIUtils, WebUIPage}
 
-class RapidsHistoryServerPlugin extends AppHistoryServerPlugin {
-  override def createListeners(
-      conf: SparkConf, store: ElementTrackingStore): Seq[SparkListener] = {
-    Seq()
+class ProfComparePage(
+    parent: ProfCompareTab,
+    conf: SparkConf,
+    rapidsStore: RapidsAppStatusStore) extends WebUIPage("results") with Logging {
+  override def render(request: HttpServletRequest): Seq[Node] = {
+    val appIDParameter = Option(request.getParameter("id"))
+    val content = <p>HELLO WORLD</p>
+    UIUtils.headerSparkPage(
+      request, "Profile Comparison Report", content, parent, useDataTables = true)
   }
-
-  override def setupUI(ui: SparkUI): Unit = {
-    val rapidsStore = new RapidsAppStatusStore(ui.store, ui.store.store)
-    val mainRapidsTab = new RapidsTab(ui, rapidsStore)
-    new ProfCompareTab(ui, mainRapidsTab, rapidsStore)
-  }
-
-  override def displayOrder: Int = 2
 }

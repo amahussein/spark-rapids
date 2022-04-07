@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+/* global $, Mustache, formatDuration, formatTimeMillis, jQuery, uiRoot */
+
 function getColumnIndex(columns, columnName) {
   for (var i = 0; i < columns.length; i++) {
     if (columns[i].name == columnName)

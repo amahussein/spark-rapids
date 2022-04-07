@@ -16,23 +16,21 @@
 
 package org.apache.spark.rapids.tool.ui
 
-import org.apache.spark.SparkConf
 import org.apache.spark.rapids.tool.status.RapidsAppStatusStore
-import org.apache.spark.scheduler.SparkListener
-import org.apache.spark.status.{AppHistoryServerPlugin, ElementTrackingStore}
-import org.apache.spark.ui.SparkUI
+import org.apache.spark.ui.{SparkUI, SparkUITab}
 
-class RapidsHistoryServerPlugin extends AppHistoryServerPlugin {
-  override def createListeners(
-      conf: SparkConf, store: ElementTrackingStore): Seq[SparkListener] = {
-    Seq()
-  }
+class ProfCompareTab(
+    val parent: SparkUI,
+    val rapidsTab: RapidsTab,
+    store: RapidsAppStatusStore) extends SparkUITab(parent, "compare") {
+  val historyAppLimit = 1024
+  attachPage(new ProfHistoryPage(this, parent.conf, store))
+  attachPage(new ProfComparePage(this, parent.conf, store))
+  parent.attachTab(this)
+  parent.addStaticHandler(ProfCompareTab.STATIC_RESOURCE_DIR, "/static/rapids")
+}
 
-  override def setupUI(ui: SparkUI): Unit = {
-    val rapidsStore = new RapidsAppStatusStore(ui.store, ui.store.store)
-    val mainRapidsTab = new RapidsTab(ui, rapidsStore)
-    new ProfCompareTab(ui, mainRapidsTab, rapidsStore)
-  }
 
-  override def displayOrder: Int = 2
+object ProfCompareTab {
+  private val STATIC_RESOURCE_DIR = "org/apache/spark/rapids/tool/ui/static"
 }

@@ -31,6 +31,8 @@ class RapidsTab(
   parent.attachTab(this)
   parent.addStaticHandler(RapidsTab.STATIC_RESOURCE_DIR, "/static/rapids")
 
+  lazy val currAppID = store.appStore.applicationInfo().id
+
   def getRapidsProfileInfoForApp(
       request: HttpServletRequest, appID: String):
         (RapidsAppInfoLogProcessor, CollectInformation, ApplicationSummaryInfo) = {
