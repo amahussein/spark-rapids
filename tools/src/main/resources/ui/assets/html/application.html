@@ -124,11 +124,10 @@
                   <table id="app-details-data-table" class="table display datatable" style="width:100%">
                     <thead>
                     <tr>
-                      <th>Field</th>
-                      <th>Description</th>
-                      <th><span data-toggle="tooltip" data-placement="top"
-                                title="Time duration that includes only SQL/Dataframe queries">
-                                      Value</span></th>
+                      <th>Name</th>
+                      <th>User</th>
+                      <th>Started</th>
+                      <th>Completed</th>
                     </tr>
                     </thead>
                   </table>
@@ -343,10 +342,10 @@
             <i class="fas fa-clock"></i>
           </div>
           <div class="stats-data">
-            <div class="stats-number">{{durationCollection.appDuration}}</div>
+            <div class="stats-number">{{qualInfo.durationCollection.appDuration}}</div>
             <div class="stats-change">
               <span class="stats-timeframe">started</span>
-              <span class="stats-percentage">N/A</span>
+              <span class="stats-percentage">{{qualInfo.infoRec.startTimeFormatted}}</span>
             </div>
             <div class="stats-change">
               <span class="stats-timeframe">completed</span>

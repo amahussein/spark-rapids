@@ -103,12 +103,8 @@ function totalCPUPercentageColor(cpuPercent) {
 }
 
 /** recommendation icons display */
-
 function recommendationTableCellStyle(recommendation) {
-  // Red if GC time over GCTimePercent of total time
   return "hsla("+ recommendation * 10.0 +",100%,50%)";
-  // var alhpa = Math.min(recommendation / 20 + 0.5, 1)
-  // return ("hsla(0, 100%, 50%, " + alhpa + ")");
 }
 
 /* define recommendation grouping */
@@ -206,7 +202,7 @@ function setAppInfoRecord(appRecord, infoRecords) {
   }
   if (infoRecords.has(appRecord.appId)) {
     appRecord["infoRec"] = infoRecords.get(appRecord.appId);
-    appRecord["infoRec"]["startTimeFormated"] =
+    appRecord["infoRec"]["startTimeFormatted"] =
         formatTimeMillis(appRecord["infoRec"]["startTime"])
   }
   sparkUsers.set(appRecord["infoRec"]["sparkUser"], true);

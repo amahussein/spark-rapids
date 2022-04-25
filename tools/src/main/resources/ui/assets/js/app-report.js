@@ -17,10 +17,15 @@
 /* globals $, Mustache, qualificationRecords, qualReportSummary */
 
 var applicationUIRecord = null;
+var applicationInfoRecord = null;
 var attemptsArray = null;
 
 function fetchApplicationData(id) {
   return attemptsArray.find(app => app.appId === id);
+}
+
+function fetchApplicationInfoData(id) {
+  return appInfoRecords.find(app => app.appId === id);
 }
 
 function getBadgeName(appRecord) {
@@ -45,9 +50,17 @@ $(document).ready(function(){
 
   // get the appData
   applicationUIRecord = fetchApplicationData(appID);
+  applicationInfoRecord = fetchApplicationInfoData(appID);
+
   applicationUIRecord["badgeWrapper"] = getBadgeName(applicationUIRecord);
   // set the template of the report header
+  let combinedRec = {
+    "appInfo":  applicationInfoRecord,
+    "qualInfo": applicationUIRecord
+  };
+
   var template = $("#app-report-page-header-template").html();
-  var text = Mustache.render(template, applicationUIRecord);
+  var text = Mustache.render(template, combinedRec);
+
   $("#app-report-page-header").html(text);
 });

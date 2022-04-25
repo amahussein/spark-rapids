@@ -193,17 +193,11 @@ $(document).ready(function(){
         name: recommendGPUColName,
         data: 'gpuRecommendation',
         render: function (data, type, row) {
-          if (type === 'display' || type === 'filter') {
-            var recommendedGroup = recommendationContainer.find(grp => grp.isGroupOf(row))
-            var cellColor = recommendationTableCellStyle(data)
-            let toolTip = 'data-toggle=\"tooltip\" data-html=\"true\" data-placement=\"top\" '
-                + 'title=\"[' + recommendedGroup.displayName + '] '
-                + recommendedGroup.description + '\"';
-            let iconSpan = `<span class="fa fa-star" style="color: ${cellColor} "></span>`;
-            const rendered = `<span ${toolTip}> ${iconSpan.repeat(recommendedGroup.rate)}</span>`;
-            return rendered;
-          }
-          return data;
+          var recommendedGroup = recommendationContainer.find(grp => grp.isGroupOf(row));
+          return recommendedGroup.displayName;
+        },
+        fnCreatedCell: (nTd, sData, oData, _ignored_iRow, _ignored_iCol) => {
+          $(nTd).css('background', recommendationTableCellStyle(sData));
         },
       }
     ],

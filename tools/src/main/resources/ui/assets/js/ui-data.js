@@ -34,7 +34,7 @@ let qualReportSummary = {
     },
     "speedups": {
         "numeric": "N/A",
-        "header": "Speedups",
+        "header": "Acceleration Opportunity",
         "statsPercentage": "% Expected GPU Accelration",
         "statsTimeFrame": "of Total Durations",
         "totalSqlDataframeTaskDuration" : "0 ms",
