@@ -277,7 +277,8 @@ class QualificationAppInfo(
       logWarning(s"speedupDur/factor duration is: ${speedupDuration/speedupFactor}")
 
       val appTaskDuration = nonSQLDuration + sqlDataframeTaskDuration
-      logWarning(s"noon sql dur is: $nonSQLDuration sql dataframe task dur is $sqlDataframeTaskDuration")
+      logWarning(
+        s"noon sql dur is: $nonSQLDuration sql dataframe task dur is $sqlDataframeTaskDuration")
       logWarning(s"appTaskDuration is: $appTaskDuration")
       val totalSpeedup = appTaskDuration / estimatedDuration
       logWarning(s"total speedup : $totalSpeedup")
