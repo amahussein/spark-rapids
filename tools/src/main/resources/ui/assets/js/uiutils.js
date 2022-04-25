@@ -212,6 +212,12 @@ function setAppInfoRecord(appRecord, infoRecords) {
   sparkUsers.set(appRecord["infoRec"]["sparkUser"], true);
 }
 
+// which maps into wallclock time that shows how much of the SQL duration we think we can
+// speed up on the GPU
+function calculateAccelerationOpportunity(appRec) {
+  let ratio = (appRec["speedupDuration"] * 1.0) / appRec["sqlDataframeTaskDuration"];
+  return appRec["sqlDataFrameDuration"] * ratio;
+}
 function processRawData(rawRecords, appInfoRawRecords) {
   var processedRecords = [];
   var maxOpportunity = 0;
@@ -226,6 +232,13 @@ function processRawData(rawRecords, appInfoRawRecords) {
       "sqlDFDuration": formatDuration(appRecord["sqlDataFrameDuration"]),
       "sqlDFTaskDuration": formatDuration(appRecord["sqlDataframeTaskDuration"]),
       "sqlDurationProblems": formatDuration(appRecord["sqlDurationForProblematic"]),
+      "nonSqlTaskDurationAndOverhead": formatDuration(appRecord["nonSqlTaskDurationAndOverhead"]),
+      "estimatedDuration": formatDuration(appRecord["estimatedDuration"]),
+      "estimatedDurationWallClock":
+        formatDuration((appRecord["appDuration"] * 1.0) / appRecord["totalSpeedup"]),
+      "accelerationOpportunity": formatDuration(calculateAccelerationOpportunity(appRecord)),
+      "unsupportedDuration": formatDuration(appRecord["unsupportedDuration"]),
+      "speedupDuration": formatDuration(appRecord["speedupDuration"]),
     }
     setAppInfoRecord(appRecord, infoRecords);
     maxOpportunity =

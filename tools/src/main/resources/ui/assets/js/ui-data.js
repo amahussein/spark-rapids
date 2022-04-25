@@ -55,7 +55,15 @@ let toolTipsValues = {
               When running on YARN, each application may have multiple attempts, but there are attempt IDs only for applications in cluster mode, not applications in client mode. Applications in YARN cluster mode can be identified by their [attempt-id].",
         "App Duration": "Wall-Clock time measured since the application starts till it is completed. If an app is not completed an estimated completion time would be computed.",
         "Opportunity": "Expected percentage of the speedup after adding RAPIDS plugin",
-        "Recommendation": "On a scale from 1 to 5, is it recommended to use RAPIDS"
+        "Recommendation": "On a scale from 1 to 5, is it recommended to use RAPIDS",
+        "details": {
+            "totalSpeedup":
+              "speedup factor estimated for the app. Calculated as (app_duration / estimated_duration)",
+            "nonSqlTaskDurationAndOverhead": "total duration of the app not involving SQL",
+            "estimatedDuration": "Predicted runtime of the app if it was run on GPU",
+            "speedupDuration": "Duration of SQL operations that are supported on GPU. It is calculated as (sqlDuration - unsupportedDuration)",
+            "unsupportedDuration": "An estimate total duration of SQL operations that are not supported on GPU"
+        }
     }
 }
 

@@ -30,36 +30,34 @@ var recommendTblAppDetailsTemplate =
     '    <tr>' +
     '      <th scope=\"col\">#</th>' +
     '      <th scope=\"col\">Value</th>' +
+    '      <th scope=\"col\">Description</th>' +
     '    </tr>' +
     '  </thead>' +
     '  <tbody>' +
     '    <tr>' +
-    '      <th scope=\"row\">Total SpeedUps</th>' +
-    '      <td> N/A </td>' +
-    '    </tr>' +
-    '    <tr>' +
-    '      <th scope=\"row\">User</th>' +
-    '      <td> {{infoRec.sparkUser}} </td>' +
-    '    </tr>' +
-    '    <tr>' +
-    '      <th scope=\"row\">Started</th>' +
-    '      <td> {{infoRec.startTimeFormated}} </td>' +
+    '      <th scope=\"row\">Total Speed-up</th>' +
+    '      <td> {{totalSpeedup}} </td>' +
+    '      <td> Speedup factor estimated for the app. Calculated as (app_duration / gpu_estimated_duration) % </td>' +
     '    </tr>' +
     '    <tr>' +
     '      <th scope=\"row\">App Duration</th>' +
     '      <td> {{durationCollection.appDuration}} </td>' +
+    '      <td> Wall-Clock time measured since the application starts till it is completed. If an app is not completed an estimated completion time would be computed. </td>' +
     '    </tr>' +
     '    <tr>' +
-    '      <th scope=\"row\">Sql DF Duration</th>' +
+    '      <th scope=\"row\">Sql Duration</th>' +
     '      <td> {{durationCollection.sqlDFDuration}} </td>' +
+    '      <td> Wall-Clock time spent in tasks of SQL Dataframe operations. </td>' +
     '    </tr>' +
     '    <tr>' +
-    '      <th scope=\"row\">Sql DF Task Duration</th>' +
-    '      <td> {{durationCollection.sqlDFTaskDuration}} </td>' +
+    '      <th scope=\"row\">Acceleration Opportunity</th>' +
+    '      <td> {{durationCollection.accelerationOpportunity}} </td>' +
+    '      <td> Wall-Clock time that shows how much of the SQL duration can be speed-up on the GPU. </td>' +
     '    </tr>' +
     '    <tr>' +
-    '      <th scope=\"row\">Duration of Problematic Sql</th>' +
-    '      <td> {{durationCollection.sqlDurationProblems}} </td>' +
+    '      <th scope=\"row\">GPU Estimated Duration</th>' +
+    '      <td> {{durationCollection.estimatedDurationWallClock}} </td>' +
+    '      <td> Predicted runtime of the app if it was run on GPU </td>' +
     '    </tr>' +
     '  </tbody>' +
     '</table>' +
