@@ -71,7 +71,7 @@ class Qualification(outputDir: String, numRows: Int, hadoopConf: Configuration,
     // the csv file we write the entire data in descending order
     val allAppsSum = allApps.asScala.toSeq
     val sortedDesc = allAppsSum.sortBy(sum => {
-        (-sum.score, -sum.sqlDataFrameDuration, -sum.appDuration)
+      (-sum.score, -sum.sqlDataFrameDuration, -sum.appDuration)
     })
     val qWriter = new QualOutputWriter(outputDir, reportReadSchema, printStdout)
     qWriter.writeCSV(sortedDesc)
@@ -98,7 +98,7 @@ class Qualification(outputDir: String, numRows: Int, hadoopConf: Configuration,
         logWarning(s"No Application found that contain SQL for ${path.eventLog.toString}!")
         None
       } else {
-        val qualSumInfo = app.get.aggregateStats()
+        val qualSumInfo = app.get.aggregateStats
         if (qualSumInfo.isDefined) {
           allApps.add(qualSumInfo.get)
           val endTime = System.currentTimeMillis()
@@ -110,7 +110,7 @@ class Qualification(outputDir: String, numRows: Int, hadoopConf: Configuration,
     } catch {
       case oom: OutOfMemoryError =>
         logError(s"OOM error while processing large file: ${path.eventLog.toString}." +
-            s"Increase heap size.", oom)
+          s"Increase heap size.", oom)
         System.exit(1)
       case o: Error =>
         logError(s"Error occured while processing file: ${path.eventLog.toString}", o)
