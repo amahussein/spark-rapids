@@ -133,7 +133,7 @@ $(document).ready(function(){
   // Start implementation of GPU Recommendations Apps
 
   var recommendGPUColName = "gpuRecommendationX"
-  var opportunityColName = "opportunity"
+  var opportunityColName = "accelerationOpportunity"
   var sortColumnForGPURecommend = opportunityColName
   var gpuRecommendationConf = {
     responsive: true,
@@ -179,26 +179,46 @@ $(document).ready(function(){
       },
       {
         name: opportunityColName,
-        data: 'gpuRecommendation',
+        data: 'accelerationOpportunity',
         render: function (data, type, row) {
-          let calcValue = data * 10.0;
           if (type === 'display') {
-            return '<progress title="' + calcValue + '% " value="' + calcValue + '" max="100.0"></progress>';
-            //return twoDecimalFormatter.format(data * 10.0) + "%"
+            return '<progress title="'
+              + twoDecimalFormatter.format(data)
+              + '% '
+              + toolTipsValues["gpuRecommendations"]["Opportunity"]
+              + '" value="' + data + '" max="100.0"></progress>';
           }
           return data;
         },
+        fnCreatedCell: (nTd, sData, oData, _ignored_iRow, _ignored_iCol) => {
+          let toolTipVal = toolTipsValues['gpuRecommendations']['Opportunity'];
+          $(nTd).attr('data-toggle', "tooltip");
+          $(nTd).attr('data-placement', "top");
+          $(nTd).attr('html', "true");
+          $(nTd).attr('data-html', "true");
+          $(nTd).attr('title', toolTipVal);
+        }
       },
       {
         name: recommendGPUColName,
-        data: 'gpuRecommendation',
+        data: 'gpuCategory',
         render: function (data, type, row) {
-          var recommendedGroup = recommendationContainer.find(grp => grp.isGroupOf(row));
-          return recommendedGroup.displayName;
+          if (type === 'display') {
+            let recommendGroup = recommendationsMap.get(data);
+            return `<span class="` + recommendGroup.getBadgeDisplay(row)
+              + `">` + recommendGroup.displayName + `</span>`;
+          }
+          return data;
         },
         fnCreatedCell: (nTd, sData, oData, _ignored_iRow, _ignored_iCol) => {
-          $(nTd).css('background', recommendationTableCellStyle(sData));
-        },
+          let recommendGroup = recommendationsMap.get(sData);
+          let toolTipVal = recommendGroup.description;
+          $(nTd).attr('data-toggle', "tooltip");
+          $(nTd).attr('data-placement', "top");
+          $(nTd).attr('html', "true");
+          $(nTd).attr('data-html', "true");
+          $(nTd).attr('title', toolTipVal);
+        }
       }
     ],
     //dom with search panes
@@ -292,14 +312,10 @@ $(document).ready(function(){
       let gpuCatgeoryOptions = function() {
         let categoryOptions = [];
         for (let i in recommendationContainer) {
-          if (i == recommendationContainer.length - 1) {
-            // skip last index (insufficient)
-            continue;
-          }
           let currOption = {
             label: recommendationContainer[i].displayName,
             value: function(rowData, rowIdx) {
-              return (rowData["gpuCategory"] === recommendationContainer[i].id);
+              return (rowData["gpuCategory"] === recommendationContainer[i].displayName);
             }
           }
           categoryOptions.push(currOption);

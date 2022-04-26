@@ -104,30 +104,26 @@ function totalCPUPercentageColor(cpuPercent) {
 
 /** recommendation icons display */
 function recommendationTableCellStyle(recommendation) {
+
   return "hsla("+ recommendation * 10.0 +",100%,50%)";
 }
 
 /* define recommendation grouping */
 const recommendationRanges = {
-  "A": {low: 7.5, high: 1000.0},
-  "B": {low: 3.0, high: 7.7},
-  "C": {low: 0.5, high: 3.0},
-  "D": {low: -100.0, high: 0.5},
+  "A": {low: 3.0, high: 10.0},
+  "B": {low: 1.25, high: 3.0},
+  "C": {low: 0.0, high: 1.25},
 }
 
 class GpuRecommendationCategory {
-  constructor(id, relRate, printName, descr, initCollapsed = false) {
+  constructor(id, relRate, printName, descr, displayClass, initCollapsed = false) {
     this.id = id;
     this.displayName = printName;
     this.range = recommendationRanges[id];
     this.collapsed = initCollapsed;
     this.description = descr;
     this.rate = relRate;
-  }
-
-  // Getter
-  get area() {
-    return this.calcArea();
+    this.badgeDisplay = displayClass;
   }
 
   // Method
@@ -139,42 +135,53 @@ class GpuRecommendationCategory {
   toggleCollapsed() {
     this.collapsed = !this.collapsed;
   }
+
+  getBadgeDisplay(row) {
+    return this.badgeDisplay;
+  }
 }
 
 let recommendationContainer = [
   new GpuRecommendationCategory("A", 5,
       "Strongly Recommended",
-      "Spark Rapids is expected to speedup the App"),
+      "Spark Rapids is expected to speedup the App",
+    "badge badge-pill badge-success"),
   new GpuRecommendationCategory("B", 4,
       "Recommended",
-      "Using Spark RAPIDS expected to give a moderate speedup."),
+      "Using Spark RAPIDS expected to give a moderate speedup.",
+    "badge badge-pill badge-warning"),
   new GpuRecommendationCategory("C", 3,
       "Discouraged",
-      "[Not-Recommended]: It is not likely that GPU Acceleration will be tangible"),
-  new GpuRecommendationCategory("D", 1,
-      "Insufficient",
-      "[Insufficient] Event-logs do not provide enough information to analyze."),
+      "[Not-Recommended]: It is not likely that GPU Acceleration will be tangible",
+    "badge badge-pill badge-danger"),
 ];
 
-var recommendationsMap = recommendationContainer.reduce(function (map, obj) {
-  map[obj.displayName] = obj;
+
+function createRecommendationGroups(recommendationsArr) {
+  let map = new Map()
+  recommendationsArr.forEach(object => {
+    map.set(object.displayName, object);
+  });
   return map;
-}, {});
+}
+
+let recommendationsMap = new Map(createRecommendationGroups(recommendationContainer));
+
 
 let sparkUsers = new Map();
 
 /* define constants for the tables configurations */
 let defaultPageLength = 20;
 let defaultLengthMenu = [[20, 40, 60, 100, -1], [20, 40, 60, 100, "All"]];
-let appFieldAccCriterion = "sqlDataframeTaskDuration";//"sqlDFTaskDuration";
 
-let simulateRecommendationEnabled = true;
+let appFieldAccCriterion = UIConfig.dataProcessing["gpuRecommendation.appColumn"];
+let simulateRecommendationEnabled = UIConfig.dataProcessing["simulateRecommendation"];
 
 function simulateGPURecommendations(appsArray, maxScore) {
   for (let i in appsArray) {
-    appsArray[i]["gpuRecommendation"] = simulateRecommendationEnabled ?
-        getRandomIntInclusive(1, 10)
-        : ((appsArray[i][appFieldAccCriterion] * 10.00) / maxScore);
+    appsArray[i]["gpuRecommendation"] =
+      simulateRecommendationEnabled ? getRandomIntInclusive(1, 10)
+        : appsArray[i][appFieldAccCriterion];
   }
 }
 
@@ -182,7 +189,7 @@ function simulateGPURecommendations(appsArray, maxScore) {
 function setGPURecommendations(appsArray) {
   for (let i in appsArray) {
     let appCategory = recommendationContainer.find(grp => grp.isGroupOf(appsArray[i]))
-    appsArray[i]["gpuCategory"] = appCategory.id;
+    appsArray[i]["gpuCategory"] = appCategory.displayName;
   }
 }
 
@@ -210,10 +217,15 @@ function setAppInfoRecord(appRecord, infoRecords) {
 
 // which maps into wallclock time that shows how much of the SQL duration we think we can
 // speed up on the GPU
-function calculateAccelerationOpportunity(appRec) {
+function calculateAccOpportunityAsDuration(appRec) {
   let ratio = (appRec["speedupDuration"] * 1.0) / appRec["sqlDataframeTaskDuration"];
   return appRec["sqlDataFrameDuration"] * ratio;
 }
+
+function calculateAccOpportunity(appRec) {
+  return (appRec["speedupDuration"] * 100.0) / appRec["sqlDataframeTaskDuration"];
+}
+
 function processRawData(rawRecords, appInfoRawRecords) {
   var processedRecords = [];
   var maxOpportunity = 0;
@@ -232,7 +244,7 @@ function processRawData(rawRecords, appInfoRawRecords) {
       "estimatedDuration": formatDuration(appRecord["estimatedDuration"]),
       "estimatedDurationWallClock":
         formatDuration((appRecord["appDuration"] * 1.0) / appRecord["totalSpeedup"]),
-      "accelerationOpportunity": formatDuration(calculateAccelerationOpportunity(appRecord)),
+      "accelerationOpportunity": formatDuration(calculateAccOpportunityAsDuration(appRecord)),
       "unsupportedDuration": formatDuration(appRecord["unsupportedDuration"]),
       "speedupDuration": formatDuration(appRecord["speedupDuration"]),
     }
@@ -241,6 +253,7 @@ function processRawData(rawRecords, appInfoRawRecords) {
         (maxOpportunity < appRecord[appFieldAccCriterion])
             ? appRecord[appFieldAccCriterion] : maxOpportunity;
     appRecord["attemptDetailsURL"] = "application.html?app_id=" + appRecord.appId;
+    appRecord["accelerationOpportunity"] = calculateAccOpportunity(appRecord);
     processedRecords.push(appRecord)
   }
   simulateGPURecommendations(processedRecords, maxOpportunity);

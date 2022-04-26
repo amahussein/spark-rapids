@@ -29,16 +29,9 @@ function fetchApplicationInfoData(id) {
 }
 
 function getBadgeName(appRecord) {
-  var groupBadgeClasses = {
-    "A": "badge-success",
-    "B": "badge-primary",
-    "C": "badge-secondary",
-    "D": "badge-light"
-  }
-  var recommendedGroup = recommendationContainer.find(grp => grp.isGroupOf(appRecord));
-  return `<span class=\"badge badge-pill `
-      + groupBadgeClasses[recommendedGroup.id]
-      + `\"> ` + recommendedGroup.displayName + `</span>`
+  let recommendGroup =  recommendationsMap.get(appRecord.gpuCategory);
+  return `<span class="` + recommendGroup.getBadgeDisplay(appRecord)
+      + `">` + recommendGroup.displayName + `</span>`
 }
 
 $(document).ready(function(){
