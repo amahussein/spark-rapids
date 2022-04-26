@@ -9327,7 +9327,53 @@ body {
 
 table.dataTable tr.dtrg-group.dtrg-level-0 td {
    background-color: #f0f1f7;
- }
+}
+
+.badge-strong-recommended {
+  color: #fff;
+  background-color: rgba(10, 102, 35, 0.98); }
+a.badge-recommended:hover, a.badge-recommended:focus {
+  color: #fff;
+  background-color: #0a6623; }
+a.badge-recommended:focus, a.badge-recommended.focus {
+  outline: 0;
+  -webkit-box-shadow: 0 0 0 0.2rem rgba(29, 171, 71, 0.5);
+  box-shadow: 0 0 0 0.2rem rgba(29, 171, 71, 0.5); }
+
+
+
+.badge-strong-recommended {
+  color: #fff;
+  background-color: #1DAB47; }
+a.badge-strong-recommended:hover, a.badge-strong-recommended:focus {
+  color: #fff;
+  background-color: #167f35; }
+a.badge-strong-recommended:focus, a.badge-strong-recommended.focus {
+  outline: 0;
+  -webkit-box-shadow: 0 0 0 0.2rem rgba(29, 171, 71, 0.5);
+  box-shadow: 0 0 0 0.2rem rgba(29, 171, 71, 0.5); }
+
+.badge-recommended {
+  color: #fff;
+  background-color: rgba(10, 102, 35, 0.98); }
+a.badge-recommended:hover, a.badge-recommended:focus {
+  color: #fff;
+  background-color: #0a6623; }
+a.badge-recommended:focus, a.badge-recommended.focus {
+  outline: 0;
+  -webkit-box-shadow: 0 0 0 0.2rem rgba(29, 171, 71, 0.5);
+  box-shadow: 0 0 0 0.2rem rgba(29, 171, 71, 0.5); }
+
+.badge-not-recommended {
+  color: #212529;
+  background-color: #FCAE3F; }
+a.badge-not-recommended:hover, a.badge-not-recommended:focus {
+  color: #212529;
+  background-color: #fb990d; }
+a.badge-not-recommended:focus, a.badge-not-recommended.focus {
+  outline: 0;
+  -webkit-box-shadow: 0 0 0 0.2rem rgba(252, 174, 63, 0.5);
+  box-shadow: 0 0 0 0.2rem rgba(252, 174, 63, 0.5); }
 
  /* to use scrolling for wide dataTables
    div.dataTables_wrapper {

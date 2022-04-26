@@ -112,7 +112,7 @@ function recommendationTableCellStyle(recommendation) {
 const recommendationRanges = {
   "A": {low: 3.0, high: 10.0},
   "B": {low: 1.25, high: 3.0},
-  "C": {low: 0.0, high: 1.25},
+  "C": {low: -1000.0, high: 1.25},
 }
 
 class GpuRecommendationCategory {
@@ -145,15 +145,15 @@ let recommendationContainer = [
   new GpuRecommendationCategory("A", 5,
       "Strongly Recommended",
       "Spark Rapids is expected to speedup the App",
-    "badge badge-pill badge-success"),
+    "badge badge-pill badge-strong-recommended"),
   new GpuRecommendationCategory("B", 4,
       "Recommended",
       "Using Spark RAPIDS expected to give a moderate speedup.",
-    "badge badge-pill badge-warning"),
+    "badge badge-pill badge-recommended"),
   new GpuRecommendationCategory("C", 3,
-      "Discouraged",
+      "Not Recommended",
       "[Not-Recommended]: It is not likely that GPU Acceleration will be tangible",
-    "badge badge-pill badge-danger"),
+    "badge badge-pill badge-not-recommended"),
 ];
 
 
