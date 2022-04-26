@@ -283,7 +283,9 @@ function setGlobalReportSummary(processedApps) {
   }
   qualReportSummary.totalApps.numeric = processedApps.length;
   qualReportSummary.totalApps.totalAppsDurations = formatDuration(totalDurations);
+  // speedups
   qualReportSummary.speedups.totalSqlDataframeTaskDuration = formatDuration(totalSqlDataframeTaskDuration);
+  // candidates
   qualReportSummary.candidates.numeric = recommendedCnt;
   qualReportSummary.tlc.numeric = tlcCount;
   qualReportSummary.totalApps.statsPercentage =

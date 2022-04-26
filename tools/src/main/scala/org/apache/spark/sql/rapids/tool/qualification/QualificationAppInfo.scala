@@ -17,6 +17,7 @@
 package org.apache.spark.sql.rapids.tool.qualification
 
 import scala.collection.mutable.{ArrayBuffer, HashMap}
+import scala.util.Random
 
 import com.nvidia.spark.rapids.tool.EventLogInfo
 import com.nvidia.spark.rapids.tool.profiling._
@@ -231,6 +232,17 @@ class QualificationAppInfo(
     }.getOrElse(1.0)
   }
 
+  // TODO calculate the unsupported operator task duration, going to very hard
+  // for now it is a helper to generate random values for the POC.
+  private def calculateUnsupportedDuration(upperBound: Long = 0): Long = {
+    (upperBound * Random.nextDouble()).toLong
+  }
+
+  // TODO calculate speedup_factor - which is average of operator factors???
+  // For now it is a helper to generate random values for the POC. Returns rounded value
+  private def calculateSpeedupFactor(bounds: (Double, Double) = (1.0, 10.0)): Double = {
+    bounds._1 + (bounds._2 - bounds._1) *  Random.nextDouble()
+  }
   /**
    * Aggregate and process the application after reading the events.
    * @return Option of QualificationSummaryInfo, Some if we were able to process the application
@@ -238,6 +250,7 @@ class QualificationAppInfo(
    */
   def aggregateStats: Option[QualificationSummaryInfo] = {
     appInfo.map { info =>
+      // TODO: Remove the random Generatorval r = scala.util.Random
       val appDuration = calculateAppDuration(info.startTime).getOrElse(0L)
       val sqlDataframeDur = calculateSqlDataframeDuration
       // wall clock time
@@ -265,13 +278,13 @@ class QualificationAppInfo(
       val (allComplexTypes, nestedComplexTypes) = reportComplexTypes
       val problems = getAllPotentialProblems(getPotentialProblemsForDf, nestedComplexTypes)
 
-      // TODO calculate the unsupported operator task duration, going to very hard
+
       // gpuUnsupportedSQLTaskDuration = ???
-      val unsupportedDuration = 0L
+      val unsupportedDuration = calculateUnsupportedDuration(sqlDataframeTaskDuration)
+      logWarning(s"unsupported Duration is: ${unsupportedDuration}")
       val speedupDuration = sqlDataframeTaskDuration - unsupportedDuration
 
-      // TODO calculate speedup_factor - which is average of operator factors???
-      val speedupFactor = 1.0
+      val speedupFactor = calculateSpeedupFactor()
       val estimatedDuration = (speedupDuration/speedupFactor) + unsupportedDuration + nonSQLDuration
       logWarning(s"estimated duration is: $estimatedDuration")
       logWarning(s"speedupDur/factor duration is: ${speedupDuration/speedupFactor}")
@@ -280,7 +293,7 @@ class QualificationAppInfo(
       logWarning(
         s"noon sql dur is: $nonSQLDuration sql dataframe task dur is $sqlDataframeTaskDuration")
       logWarning(s"appTaskDuration is: $appTaskDuration")
-      val totalSpeedup = appTaskDuration / estimatedDuration
+      val totalSpeedup = math floor (appTaskDuration / estimatedDuration) * 1000 / 1000
       logWarning(s"total speedup : $totalSpeedup")
       // recommendation
       val speedupBucket = if (totalSpeedup > 3) {
