@@ -149,10 +149,11 @@ class QualificationAppInfo(
       logWarning(s"k $k")
     }
     sqlDurationTime.filterNot { case (sqlID, dur) =>
-      sqlIDToDataSetOrRDDCase.contains(sqlID) || dur == -1
+      // Avoid all negative durations in case a value was miscalculated.
+      assert(dur >= -1)
+      sqlIDToDataSetOrRDDCase.contains(sqlID) || dur < 0
     }.values.sum
   }
-
 
   // The total task time for all tasks that ran during SQL dataframe
   // operations.  if the SQL contains a dataset, it isn't counted.
@@ -165,7 +166,7 @@ class QualificationAppInfo(
 
   // Look at the total task times for all jobs/stages that aren't SQL or
   // SQL but dataset or rdd
-  private def calculateNonSQLTaskDataframeDuration: Long = {
+  private def calculateNonSQLTaskDataframeDuration(taskDFDuration: Long): Long = {
     val allTaskTime = stageIdToTaskEndSum.values.map(_.totalTaskDuration).sum
 
     val validSums = sqlIDToTaskEndSum.filter { case (sqlID, _) =>
@@ -173,14 +174,34 @@ class QualificationAppInfo(
     }
     val taskTimeDataSetOrRDD = validSums.values.map(dur => dur.totalTaskDuration).sum
     // TODO make more efficient
-    allTaskTime - taskTimeDataSetOrRDD - calculateTaskDataframeDuration
+    val res = allTaskTime - taskTimeDataSetOrRDD - taskDFDuration
+    assert(res >= 0)
+    res
   }
 
-  // assume overhead time is app time minus the job time.
+  // Assume that overhead is the all time windows that do not overlap with a running job.
   // TODO - What about shell where idle?
   private def calculateOverHeadTime(startTime: Long): Long = {
-    val appTime = calculateAppDuration(startTime)
-    appTime.map(_ - aggJobTime.getOrElse(0L)).getOrElse(0L)
+    // Simple algorithm:
+    // 1- sort all jobs by start/endtime.
+    // 2- Initialize Time(p) = app.StartTime
+    // 3- loop on the sorted seq. if the job.startTime is larger than the current Time(p): then this
+    //    must be considered a gap
+    // 4- Update Time(p) at the end of each iteration: Time(p+1) = Max(Time(p), job.endTime)
+    val sortedJobs = jobIdToInfo.values.toSeq.sortBy(_.startTime)
+    var pivot = startTime
+    var overhead : Long = 0
+
+    sortedJobs.foreach(job => {
+      val timeDiff = job.startTime - pivot
+      if (timeDiff > 0) {
+        overhead += timeDiff
+      }
+      // if jobEndTime is not set, use job.startTime
+      pivot = Math max(pivot, job.endTime.getOrElse(job.startTime))
+    })
+    logWarning(s"Calculated Overhead: ${overhead}")
+    overhead
   }
 
   private def getSQLDurationProblematic: Long = {
@@ -233,15 +254,16 @@ class QualificationAppInfo(
   }
 
   // TODO calculate the unsupported operator task duration, going to very hard
-  // for now it is a helper to generate random values for the POC.
+  // for now it is a helper to generate random values for the POC. The values have to be
+  // [0, sqlDataframeTaskDuration[
   private def calculateUnsupportedDuration(upperBound: Long = 0): Long = {
-    (upperBound * Random.nextDouble()).toLong
+    (upperBound * Random.nextDouble().abs).toLong
   }
 
   // TODO calculate speedup_factor - which is average of operator factors???
   // For now it is a helper to generate random values for the POC. Returns rounded value
-  private def calculateSpeedupFactor(bounds: (Double, Double) = (1.0, 10.0)): Double = {
-    bounds._1 + (bounds._2 - bounds._1) *  Random.nextDouble()
+  private def calculateSpeedupFactor(bounds: (Double, Double) = (1.0, 5.0)): Double = {
+    bounds._1 + (bounds._2 - bounds._1) *  Random.nextDouble().abs
   }
   /**
    * Aggregate and process the application after reading the events.
@@ -250,9 +272,9 @@ class QualificationAppInfo(
    */
   def aggregateStats: Option[QualificationSummaryInfo] = {
     appInfo.map { info =>
-      // TODO: Remove the random Generatorval r = scala.util.Random
       val appDuration = calculateAppDuration(info.startTime).getOrElse(0L)
       val sqlDataframeDur = calculateSqlDataframeDuration
+      assert(appDuration >= 0 && sqlDataframeDur >= 0 && appDuration >= sqlDataframeDur)
       // wall clock time
       val executorCpuTimePercent = calculateCpuTimePercent
       val endDurationEstimated = this.appEndTime.isEmpty && appDuration > 0
@@ -260,9 +282,14 @@ class QualificationAppInfo(
       val readScoreRatio = calculateReadScoreRatio
 
       val sqlDataframeTaskDuration = calculateTaskDataframeDuration
-      val noSQLDataframeTaskDuration = calculateNonSQLTaskDataframeDuration
+      val noSQLDataframeTaskDuration =
+        calculateNonSQLTaskDataframeDuration(sqlDataframeTaskDuration)
       val overheadTime = calculateOverHeadTime(info.startTime)
       val nonSQLDuration = noSQLDataframeTaskDuration + overheadTime
+      logWarning(s"\n\tnonSQLDuration: ${nonSQLDuration}" +
+        s"\n\toverheadTime: ${overheadTime}" +
+        s"\n\tnoSQLDataframeTaskDuration: ${noSQLDataframeTaskDuration}" +
+        s"\n\tsqlDataframeTaskDuration: ${sqlDataframeTaskDuration} ")
       val readScoreHumanPercent = 100 * readScoreRatio
       val readScoreHumanPercentRounded = f"${readScoreHumanPercent}%1.2f".toDouble
       val score = calculateScore(readScoreRatio, sqlDataframeTaskDuration)
@@ -281,10 +308,12 @@ class QualificationAppInfo(
 
       // gpuUnsupportedSQLTaskDuration = ???
       val unsupportedDuration = calculateUnsupportedDuration(sqlDataframeTaskDuration)
-      logWarning(s"unsupported Duration is: ${unsupportedDuration}")
       val speedupDuration = sqlDataframeTaskDuration - unsupportedDuration
-
       val speedupFactor = calculateSpeedupFactor()
+      logWarning(
+        s"\n\tunsupported Duration is: ${unsupportedDuration}" +
+          s"\n\tspeedupDuration: ${speedupDuration}" +
+          s"\n\taverage SpeedupFactor is: ${speedupFactor}")
       val estimatedDuration = (speedupDuration/speedupFactor) + unsupportedDuration + nonSQLDuration
       logWarning(s"estimated duration is: $estimatedDuration")
       logWarning(s"speedupDur/factor duration is: ${speedupDuration/speedupFactor}")
@@ -293,7 +322,8 @@ class QualificationAppInfo(
       logWarning(
         s"noon sql dur is: $nonSQLDuration sql dataframe task dur is $sqlDataframeTaskDuration")
       logWarning(s"appTaskDuration is: $appTaskDuration")
-      val totalSpeedup = math floor (appTaskDuration / estimatedDuration) * 1000 / 1000
+      val totalSpeedup = (math floor appTaskDuration / estimatedDuration * 1000) / 1000
+      //val totalSpeedup = appTaskDuration / estimatedDuration
       logWarning(s"total speedup : $totalSpeedup")
       // recommendation
       val speedupBucket = if (totalSpeedup > 3) {

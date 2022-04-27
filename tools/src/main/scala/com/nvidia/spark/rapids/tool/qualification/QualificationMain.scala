@@ -56,7 +56,7 @@ object QualificationMain extends Logging {
     val timeout = appArgs.timeout.toOption
     val readScorePercent = appArgs.readScorePercent.getOrElse(20)
     val uiEnabled = appArgs.uiEnabled.getOrElse(true)
-    // if uiEnabed is true, enable all detailed information by default
+    // if uiEnabled is true, enable all detailed information by default
     val reportReadSchema = appArgs.reportReadSchema.getOrElse(uiEnabled)
     val order = appArgs.order.getOrElse("desc")
     val hadoopConf = new Configuration()
