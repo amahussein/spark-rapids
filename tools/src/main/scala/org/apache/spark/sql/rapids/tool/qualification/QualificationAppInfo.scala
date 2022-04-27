@@ -262,7 +262,7 @@ class QualificationAppInfo(
 
   // TODO calculate speedup_factor - which is average of operator factors???
   // For now it is a helper to generate random values for the POC. Returns rounded value
-  private def calculateSpeedupFactor(bounds: (Double, Double) = (1.0, 5.0)): Double = {
+  private def calculateSpeedupFactor(bounds: (Double, Double) = (1.0, 10.0)): Double = {
     bounds._1 + (bounds._2 - bounds._1) *  Random.nextDouble().abs
   }
   /**

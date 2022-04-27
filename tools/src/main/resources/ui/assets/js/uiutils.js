@@ -222,8 +222,15 @@ function calculateAccOpportunityAsDuration(appRec) {
   return appRec["sqlDataFrameDuration"] * ratio;
 }
 
+function setAppTaskDuration(appRec) {
+  // appTaskDuration = nonSql + sqlTask Durations
+  appRec["appTaskDuration"] =
+    appRec["sqlDataframeTaskDuration"]
+    + appRec["nonSqlTaskDurationAndOverhead"]
+}
+
 function calculateAccOpportunity(appRec) {
-  return (appRec["speedupDuration"] * 100.0) / appRec["sqlDataframeTaskDuration"];
+  return (appRec["speedupDuration"] * 100.0) / appRec["appTaskDuration"];
 }
 
 function processRawData(rawRecords, appInfoRawRecords) {
@@ -253,6 +260,7 @@ function processRawData(rawRecords, appInfoRawRecords) {
         (maxOpportunity < appRecord[appFieldAccCriterion])
             ? appRecord[appFieldAccCriterion] : maxOpportunity;
     appRecord["attemptDetailsURL"] = "application.html?app_id=" + appRecord.appId;
+    setAppTaskDuration(appRecord);
     appRecord["accelerationOpportunity"] = calculateAccOpportunity(appRecord);
     processedRecords.push(appRecord)
   }

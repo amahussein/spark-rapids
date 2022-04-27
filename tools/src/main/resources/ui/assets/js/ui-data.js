@@ -34,7 +34,7 @@ let qualReportSummary = {
     },
     "speedups": {
         "numeric": "N/A",
-        "header": "Acceleration Opportunity",
+        "header": "GPU Opportunity",
         "statsPercentage": "% Expected GPU Accelration",
         "statsTimeFrame": "of Total Durations",
         "totalSqlDataframeTaskDuration" : "0 ms",
@@ -51,10 +51,10 @@ let qualReportSummary = {
 let toolTipsValues = {
     "gpuRecommendations": {
         "App Name": "Name of the application",
-        "App ID": "An application is referenced by its application ID, [app-id]. \
-              When running on YARN, each application may have multiple attempts, but there are attempt IDs only for applications in cluster mode, not applications in client mode. Applications in YARN cluster mode can be identified by their [attempt-id].",
+        "App ID": "An application is referenced by its application ID, [app-id]. " +
+          "<br> When running on YARN, each application may have multiple attempts, but there are attempt IDs only for applications in cluster mode, not applications in client mode. Applications in YARN cluster mode can be identified by their [attempt-id].",
         "App Duration": "Wall-Clock time measured since the application starts till it is completed. If an app is not completed an estimated completion time would be computed.",
-        "Opportunity": "Expected percentage of Sql Task Duration that could be sped-up by the GPU",
+        "GPU Opportunity": "Expected percentage of Sql Task Duration that could be sped-up by the GPU ",
         "Recommendation": "On a scale from 1 to 5, is it recommended to use RAPIDS",
         "details": {
             "totalSpeedup":
@@ -80,7 +80,7 @@ let UIConfig = {
         "searchPanes": {
             enabled: true,
             "dtConfigurations": {
-                initCollapsed: false,
+                initCollapsed: true,
                 viewTotal: true,
                 // Note that there is a bug in cascading that breaks paging of the table
                 cascadePanes: true,

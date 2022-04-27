@@ -24,7 +24,7 @@ function resetCollapsableGrps(groupArr, flag) {
  * HTML template used to render the application details in the collapsible
  * rows of the GPURecommendationTable.
  */
-var recommendTblAppDetailsTemplate =
+let recommendTblAppDetailsTemplate =
     '<table class=\"table table-striped compact dataTable style=padding-left:50px;\">' +
     '  <thead>' +
     '    <tr>' +
@@ -37,7 +37,8 @@ var recommendTblAppDetailsTemplate =
     '    <tr>' +
     '      <th scope=\"row\">Total Speed-up</th>' +
     '      <td> {{totalSpeedup}} </td>' +
-    '      <td> Speedup factor estimated for the app. Calculated as (app_duration / gpu_estimated_duration) % </td>' +
+    '      <td> Speedup factor estimated for the app. Calculated as ' +
+    '           <math><mfrac><mn>App-Duration</mn><mi>GPU-Estimated-Duration</mi></mfrac></math></td>' +
     '    </tr>' +
     '    <tr>' +
     '      <th scope=\"row\">App Duration</th>' +
@@ -45,12 +46,12 @@ var recommendTblAppDetailsTemplate =
     '      <td> Wall-Clock time measured since the application starts till it is completed. If an app is not completed an estimated completion time would be computed. </td>' +
     '    </tr>' +
     '    <tr>' +
-    '      <th scope=\"row\">Sql Duration</th>' +
+    '      <th scope=\"row\">SQL Duration</th>' +
     '      <td> {{durationCollection.sqlDFDuration}} </td>' +
     '      <td> Wall-Clock time spent in tasks of SQL Dataframe operations. </td>' +
     '    </tr>' +
     '    <tr>' +
-    '      <th scope=\"row\">Acceleration Opportunity</th>' +
+    '      <th scope=\"row\">GPU Opportunity</th>' +
     '      <td> {{durationCollection.accelerationOpportunity}} </td>' +
     '      <td> Wall-Clock time that shows how much of the SQL duration can be speed-up on the GPU. </td>' +
     '    </tr>' +
@@ -111,31 +112,16 @@ function collapseAllGpuRows(gpuTable) {
   gpuTable.draw(false);
 }
 
-function initRating(container){
-  $('span.rating', container).raty({
-    half: true,
-    starHalf: 'https://cdnjs.cloudflare.com/ajax/libs/raty/2.7.0/images/star-half.png',
-    starOff: 'https://cdnjs.cloudflare.com/ajax/libs/raty/2.7.0/images/star-off.png',
-    starOn: 'https://cdnjs.cloudflare.com/ajax/libs/raty/2.7.0/images/star-on.png',
-    readOnly: true,
-    score: function() {
-      return $(this).attr('data-score');
-    }
-  });
-}
-
-
-
 $(document).ready(function(){
-  // do required filtering here
+  // do the required filtering here
   let attemptArray = processRawData(qualificationRecords, appInfoRecords);
   let initGpuRecommendationConf = UIConfig[gpuRecommendationTableID];
   // Start implementation of GPU Recommendations Apps
 
-  var recommendGPUColName = "gpuRecommendationX"
-  var opportunityColName = "accelerationOpportunity"
-  var sortColumnForGPURecommend = opportunityColName
-  var gpuRecommendationConf = {
+  let recommendGPUColName = "gpuRecommendation"
+  let opportunityColName = "accelerationOpportunity"
+  let sortColumnForGPURecommend = recommendGPUColName
+  let gpuRecommendationConf = {
     responsive: true,
     info: true,
     paging: (attemptArray.length > defaultPageLength),
@@ -437,5 +423,11 @@ $(document).ready(function(){
     var text = Mustache.render(template, qualReportSummary);
     $("#qual-report-runtime-information").html(text);
   }
-
+  // set the tootTips for the table
+  $('#gpu-recommendation-card [data-toggle="tooltip"]').tooltip({
+    container: 'body',
+    html: true,
+    animation: true,
+    placement:"bottom",
+    delay: {show: 0, hide: 10.0}});
 });
