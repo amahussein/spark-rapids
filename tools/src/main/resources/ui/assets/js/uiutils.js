@@ -276,23 +276,33 @@ function setGlobalReportSummary(processedApps) {
   let tlcCount = 0;
   let totalDurations = 0;
   let totalSqlDataframeTaskDuration = 0;
+  // only count apps that are recommended
+  let totalSpeedUpDurations = 0;
   for (let i in processedApps) {
     // check if completedTime is estimated
     if (processedApps[i]["estimated"]) {
       totalEstimatedApps += 1;
     }
-    // check if the app is recommended or needs more information
-    var recommendedGroup = recommendationContainer.find(grp => grp.isGroupOf(processedApps[i]));
-    recommendedCnt = recommendedCnt + (recommendedGroup.id < "C" ? 1 : 0);
-    if (recommendedGroup.id === "D") {
-      tlcCount += 1;
-    }
     totalDurations += processedApps[i].appDuration;
     totalSqlDataframeTaskDuration += processedApps[i].sqlDataframeTaskDuration;
+    // check if the app is recommended or needs more information
+    let recommendedGroup = recommendationsMap.get(processedApps[i]["gpuCategory"])
+    if (recommendedGroup.id < "C") {
+      // this is a recommended app
+      // aggregate for GPU recommendation box
+      recommendedCnt += 1;
+      totalSpeedUpDurations += processedApps[i]["speedupDuration"]
+    } else {
+      if (recommendedGroup.id === "D") {
+        tlcCount += 1;
+      }
+    }
+
   }
   let estimatedPercentage = 0.0;
   let gpuPercent = 0.0;
   let tlcPercent = 0.0;
+  let speedUpPercent = 0.0;
 
   if (processedApps.length != 0) {
     // calculate percentage of estimatedEndTime;
@@ -301,11 +311,18 @@ function setGlobalReportSummary(processedApps) {
     gpuPercent = (100.0 * recommendedCnt) / processedApps.length;
     // percent of apps missing information
     tlcPercent = (100.0 * tlcCount) / processedApps.length;
+    speedUpPercent = (100.0 * totalSpeedUpDurations) / totalSqlDataframeTaskDuration;
   }
   qualReportSummary.totalApps.numeric = processedApps.length;
   qualReportSummary.totalApps.totalAppsDurations = formatDuration(totalDurations);
   // speedups
-  qualReportSummary.speedups.totalSqlDataframeTaskDuration = formatDuration(totalSqlDataframeTaskDuration);
+  qualReportSummary.speedups.numeric =
+    formatDuration(totalSpeedUpDurations);
+  qualReportSummary.speedups.totalSqlDataframeTaskDuration =
+    formatDuration(totalSqlDataframeTaskDuration);
+  qualReportSummary.speedups.statsPercentage = twoDecimalFormatter.format(speedUpPercent)
+    + qualReportSummary.speedups.statsPercentage;
+
   // candidates
   qualReportSummary.candidates.numeric = recommendedCnt;
   qualReportSummary.tlc.numeric = tlcCount;

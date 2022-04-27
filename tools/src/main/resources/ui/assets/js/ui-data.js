@@ -35,8 +35,8 @@ let qualReportSummary = {
     "speedups": {
         "numeric": "N/A",
         "header": "GPU Opportunity",
-        "statsPercentage": "% Expected GPU Accelration",
-        "statsTimeFrame": "of Total Durations",
+        "statsPercentage": "%",
+        "statsTimeFrame": "Supported SQL DF Durations",
         "totalSqlDataframeTaskDuration" : "0 ms",
         "totalSqlDFDurationsLabel" : "Total SqlDF Durations",
     },
@@ -51,14 +51,17 @@ let qualReportSummary = {
 let toolTipsValues = {
     "gpuRecommendations": {
         "App Name": "Name of the application",
-        "App ID": "An application is referenced by its application ID, [app-id]. " +
-          "<br> When running on YARN, each application may have multiple attempts, but there are attempt IDs only for applications in cluster mode, not applications in client mode. Applications in YARN cluster mode can be identified by their [attempt-id].",
-        "App Duration": "Wall-Clock time measured since the application starts till it is completed. If an app is not completed an estimated completion time would be computed.",
+        "App ID": "An application is referenced by its application ID, <em>app-id</em>. " +
+          "<br> When running on YARN, each application may have multiple attempts, but there are " +
+          "attempt IDs only for applications in cluster mode, not applications in client mode. " +
+          "Applications in YARN cluster mode can be identified by their <em>attempt-id</em>.",
+        "App Duration": "Wall-Clock time measured since the application starts till it is completed. " +
+          "If an app is not completed an estimated completion time would be computed.",
         "GPU Opportunity": "Expected percentage of Sql Task Duration that could be sped-up by the GPU ",
         "Recommendation": "On a scale from 1 to 5, is it recommended to use RAPIDS",
         "details": {
             "totalSpeedup":
-              "speedup factor estimated for the app. Calculated as (app_duration / estimated_duration)",
+              "speedup factor estimated for the app. Calculated as (App-Duration/ estimated_duration)",
             "nonSqlTaskDurationAndOverhead": "total duration of the app not involving SQL",
             "estimatedDuration": "Predicted runtime of the app if it was run on GPU",
             "speedupDuration": "Duration of SQL operations that are supported on GPU. It is calculated as (sqlDuration - unsupportedDuration)",
