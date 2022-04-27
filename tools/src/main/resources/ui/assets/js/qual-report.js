@@ -171,7 +171,7 @@ $(document).ready(function(){
             return '<progress title="'
               + twoDecimalFormatter.format(data)
               + '% '
-              + toolTipsValues["gpuRecommendations"]["Opportunity"]
+              + toolTipsValues["gpuRecommendations"]["GPU Opportunity"]
               + '" value="' + data + '" max="100.0"></progress>';
           }
           return data;
@@ -328,7 +328,9 @@ $(document).ready(function(){
           let currOption = {
             label: userName,
             value: function(rowData, rowIdx) {
-              return (rowData["infoRec"]["sparkUser"] === userName);
+              // get spark user
+              let infoRec = appInfoMap.get(rowData["appId"])
+              return (infoRec["sparkUser"] === userName);
             },
           }
           sparkUserOptions.push(currOption);

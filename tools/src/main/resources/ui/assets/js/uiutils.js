@@ -167,8 +167,8 @@ function createRecommendationGroups(recommendationsArr) {
 
 let recommendationsMap = new Map(createRecommendationGroups(recommendationContainer));
 
-
 let sparkUsers = new Map();
+let appInfoMap = new Map();
 
 /* define constants for the tables configurations */
 let defaultPageLength = 20;
@@ -202,17 +202,20 @@ function processAppInfoRecords(appInfoRawRecords) {
 }
 
 function setAppInfoRecord(appRecord, infoRecords) {
-  //set default values
-  appRecord["infoRec"] = {
-    "sparkUser": "N/A",
-    "startTimeFormated": "N/A"
+  // set default values
+  let infoRec = infoRecords.get(appRecord.appId);
+  if (!infoRec.hasOwnProperty("endTime")) {
+    infoRec["endTime"] = appRecord["appDuration"] + infoRec["startTime"]
   }
-  if (infoRecords.has(appRecord.appId)) {
-    appRecord["infoRec"] = infoRecords.get(appRecord.appId);
-    appRecord["infoRec"]["startTimeFormatted"] =
-        formatTimeMillis(appRecord["infoRec"]["startTime"])
+  if (!infoRec.hasOwnProperty("duration")) {
+    infoRec["duration"] = appRecord["appDuration"]
   }
-  sparkUsers.set(appRecord["infoRec"]["sparkUser"], true);
+  infoRec["displayFields"] = {
+    "startTime": formatTimeMillis(infoRec["startTime"]),
+    "endTime": formatTimeMillis(infoRec["endTime"]),
+    "duration": formatDuration(infoRec["duration"])
+  }
+  sparkUsers.set(infoRec["sparkUser"], true);
 }
 
 // which maps into wallclock time that shows how much of the SQL duration we think we can
@@ -236,7 +239,7 @@ function calculateAccOpportunity(appRec) {
 function processRawData(rawRecords, appInfoRawRecords) {
   var processedRecords = [];
   var maxOpportunity = 0;
-  var infoRecords = processAppInfoRecords(appInfoRawRecords);
+  appInfoMap = new Map(processAppInfoRecords(appInfoRawRecords));
   // let infoRecords = processAppInfoRecords(appInfoRawRecords) : Map
   for (var i in rawRecords) {
     var appRecord = JSON.parse(JSON.stringify(rawRecords[i]));
@@ -255,7 +258,7 @@ function processRawData(rawRecords, appInfoRawRecords) {
       "unsupportedDuration": formatDuration(appRecord["unsupportedDuration"]),
       "speedupDuration": formatDuration(appRecord["speedupDuration"]),
     }
-    setAppInfoRecord(appRecord, infoRecords);
+    setAppInfoRecord(appRecord, appInfoMap);
     maxOpportunity =
         (maxOpportunity < appRecord[appFieldAccCriterion])
             ? appRecord[appFieldAccCriterion] : maxOpportunity;

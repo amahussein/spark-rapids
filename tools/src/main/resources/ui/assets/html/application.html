@@ -331,12 +331,12 @@
 <!-- Dynamic code replacement using Mustache -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mustache.js/2.3.0/mustache.min.js"></script>
 <script id="app-report-page-header-template" type="text/template">
-  <h1 class="dash-title">App Details: {{qualInfo.appName}} {{{qualInfo.badgeWrapper}}}</h1>
+  <h1 class="dash-title">App Details: {{qualInfo.appName}} {{{extension.badgeWrapper}}}</h1>
 
   <div class="row">
     <div class="col-lg-2">
-      <div class="stats stats-light">
-        <h3 class="stats-title"> Duration </h3>
+      <div class="stats stats-primary">
+        <h3 class="stats-title"> Timing </h3>
         <div class="stats-content">
           <div class="stats-icon">
             <i class="fas fa-clock"></i>
@@ -344,61 +344,61 @@
           <div class="stats-data">
             <div class="stats-number">{{qualInfo.durationCollection.appDuration}}</div>
             <div class="stats-change">
-              <span class="stats-timeframe">started</span>
-              <span class="stats-percentage">{{qualInfo.infoRec.startTimeFormatted}}</span>
+              <span class="stats-percentage">{{appInfo.displayFields.startTime}}</span>
+              <span class="stats-timeframe">Start</span>
             </div>
             <div class="stats-change">
-              <span class="stats-timeframe">completed</span>
-              <span class="stats-percentage">N/A</span>
+              <span class="stats-percentage">{{appInfo.displayFields.endTime}}</span>
+              <span class="stats-timeframe">End</span>
             </div>
           </div>
         </div>
       </div>
     </div>
     <div class="col-lg-2">
-      <div class="stats stats-light">
-        <h3 class="stats-title"> Acceleration </h3>
+      <div class="stats stats-primary">
+        <h3 class="stats-title"> GPU Opportunity </h3>
         <div class="stats-content">
           <div class="stats-icon">
             <i class="fas fa-rocket"></i>
           </div>
           <div class="stats-data">
-            <div class="stats-number">N/A</div>
+            <div class="stats-number">{{extension.accelerationOpportunity}}</div>
             <div class="stats-change">
-              <span class="stats-timeframe">Operators</span>
-              <span class="stats-percentage">N/A</span>
+              <span class="stats-percentage">{{qualInfo.durationCollection.speedupDuration}}</span>
+              <span class="stats-timeframe">Supported</span>
             </div>
             <div class="stats-change">
-              <span class="stats-timeframe">cost</span>
-              <span class="stats-percentage">N/A</span>
+              <span class="stats-percentage">{{extension.speedUp}}</span>
+              <span class="stats-timeframe">Speedup Factor</span>
             </div>
           </div>
         </div>
       </div>
     </div>
     <div class="col-lg-2">
-      <div class="stats stats-light">
-        <h3 class="stats-title"> Sql Duration </h3>
+      <div class="stats stats-primary">
+        <h3 class="stats-title"> SQL Duration </h3>
         <div class="stats-content">
           <div class="stats-icon">
             <i class="fas fa-database"></i>
           </div>
           <div class="stats-data">
-            <div class="stats-number">{{durationCollection.sqlDFTaskDuration}}</div>
+            <div class="stats-number">{{qualInfo.durationCollection.sqlDFTaskDuration}}</div>
             <div class="stats-change">
               <span class="stats-timeframe">Longest</span>
               <span class="stats-percentage">N/A</span>
             </div>
             <div class="stats-change">
+              <span class="stats-percentage">{{qualInfo.durationCollection.sqlDurationProblems}}</span>
               <span class="stats-timeframe">Problems</span>
-              <span class="stats-percentage">N/A</span>
             </div>
           </div>
         </div>
       </div>
     </div>
     <div class="col-lg-2">
-      <div class="stats stats-light">
+      <div class="stats stats-primary">
         <h3 class="stats-title"> Operators </h3>
         <div class="stats-content">
           <div class="stats-icon">

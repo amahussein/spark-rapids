@@ -25,7 +25,7 @@ function fetchApplicationData(id) {
 }
 
 function fetchApplicationInfoData(id) {
-  return appInfoRecords.find(app => app.appId === id);
+  return appInfoMap.get(id);
 }
 
 function getBadgeName(appRecord) {
@@ -45,11 +45,16 @@ $(document).ready(function(){
   applicationUIRecord = fetchApplicationData(appID);
   applicationInfoRecord = fetchApplicationInfoData(appID);
 
-  applicationUIRecord["badgeWrapper"] = getBadgeName(applicationUIRecord);
   // set the template of the report header
   let combinedRec = {
     "appInfo":  applicationInfoRecord,
-    "qualInfo": applicationUIRecord
+    "qualInfo": applicationUIRecord,
+    "extension": {
+      "accelerationOpportunity":
+        twoDecimalFormatter.format(applicationUIRecord.accelerationOpportunity) + '%',
+      "badgeWrapper": getBadgeName(applicationUIRecord),
+      "speedUp": twoDecimalFormatter.format(applicationUIRecord.speedupFactor)
+    }
   };
 
   var template = $("#app-report-page-header-template").html();
