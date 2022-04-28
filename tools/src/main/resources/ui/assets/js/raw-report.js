@@ -96,10 +96,6 @@ $(document).ready(function() {
       {data: "readFileFormatScore"},
       {data: "readFileFormatAndTypesNotSupported"},
       {
-        data: "readFileFormats",
-        orderable: false,
-      },
-      {
         data: "writeDataFormat",
         orderable: false,
       },
@@ -111,6 +107,27 @@ $(document).ready(function() {
         data: "nestedComplexTypes",
         orderable: false,
       },
+      {
+        data: "estimatedDuration",
+      },
+      {
+        data: "unsupportedDuration",
+      },
+      {
+        data: "speedupDuration",
+      },
+      {
+        data: "speedupFactor",
+      },
+      {
+        data: "totalSpeedup",
+      },
+      {
+        data: "speedupBucket",
+      },
+      {
+        data: "longestSqlDuration",
+      }
     ],
     // dom: "<'row'<'col-sm-12 col-md-6'B><'col-sm-12 col-md-6'>>" +
     //      "<'row'<'col-sm-12 col-md-6'l><'col-sm-12 col-md-6'f>>" +

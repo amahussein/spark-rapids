@@ -377,7 +377,8 @@ $(document).ready(function(){
   definedDataTables[gpuRecommendationTableID] = gpuRecommendationTable;
 
   //TODO: we need to expand the rowGroups on search events
-  //There is a possible solution https://stackoverflow.com/questions/57692989/datatables-trigger-rowgroup-click-with-search-filter
+  //There is a possible solution
+  // https://stackoverflow.com/questions/57692989/datatables-trigger-rowgroup-click-with-search-filter
 
   $('#gpu-recommendation-table tbody').on('click', 'tr.dtrg-start', function () {
     var name = $(this).data('name');
@@ -386,7 +387,6 @@ $(document).ready(function(){
     recommendationsMap[name].toggleCollapsed();
     gpuRecommendationTable.draw(false);
   });
-
 
   // Add event listener for opening and closing details
   $('#gpu-recommendation-table tbody').on('click', 'td.dt-control', function () {
@@ -411,7 +411,7 @@ $(document).ready(function(){
   });
 
   // Handle click on "Collapse All" button
-  $('#btn-hide-all-children').on('click', function(){
+  $('#btn-hide-all-children').on('click', function() {
     collapseAllGpuRows(gpuRecommendationTable);
   });
 
