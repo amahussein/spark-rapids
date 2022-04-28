@@ -121,11 +121,13 @@ object QualOutputWriter {
   val SPEEDUP_FACTOR_STR = "Speedup Factor"
   val TOTAL_SPEEDUP_STR = "Total Speedup"
   val SPEEDUP_BUCKET_STR = "Recommendation"
+  val LONGEST_SQL_DURATION_STR = "Longest SQL Duration"
   val APP_DUR_STR_SIZE: Int = APP_DUR_STR.size
   val SQL_DUR_STR_SIZE: Int = SQL_DUR_STR.size
   val PROBLEM_DUR_SIZE: Int = PROBLEM_DUR_STR.size
   val SPEEDUP_BUCKET_STR_SIZE: Int = SPEEDUP_BUCKET_STR.size
   val TOTAL_SPEEDUP_STR_SIZE: Int = TOTAL_SPEEDUP_STR.size
+  val LONGEST_SQL_DURATION_STR_SIZE: Int = LONGEST_SQL_DURATION_STR.size
 
 
   def getAppIdSize(sums: Seq[QualificationSummaryInfo]): Int = {
@@ -224,7 +226,8 @@ object QualOutputWriter {
       SPEEDUP_DURATION_STR -> SPEEDUP_DURATION_STR.size,
       SPEEDUP_FACTOR_STR -> SPEEDUP_FACTOR_STR.size,
       TOTAL_SPEEDUP_STR -> TOTAL_SPEEDUP_STR.size,
-      SPEEDUP_BUCKET_STR -> SPEEDUP_BUCKET_STR.size
+      SPEEDUP_BUCKET_STR -> SPEEDUP_BUCKET_STR.size,
+      LONGEST_SQL_DURATION_STR -> LONGEST_SQL_DURATION_STR_SIZE
     )
     if (reportReadSchema) {
       detailedHeadersAndFields +=
@@ -300,7 +303,9 @@ object QualOutputWriter {
       appInfo.speedupDuration.toString -> headersAndSizes(SPEEDUP_DURATION_STR),
       appInfo.speedupFactor.toString -> headersAndSizes(SPEEDUP_FACTOR_STR),
       appInfo.totalSpeedup.toString -> headersAndSizes(TOTAL_SPEEDUP_STR),
-      stringIfempty(appInfo.speedupBucket) -> headersAndSizes(SPEEDUP_BUCKET_STR)
+      stringIfempty(appInfo.speedupBucket) -> headersAndSizes(SPEEDUP_BUCKET_STR),
+      stringIfempty(appInfo.longestSqlDuration.toString) ->
+        headersAndSizes(LONGEST_SQL_DURATION_STR)
     )
 
     if (reportReadSchema) {

@@ -51,6 +51,7 @@ class QualificationAppInfo(
   var lastJobEndTime: Option[Long] = None
   var aggJobTime: Option[Long] = None
   var lastSQLEndTime: Option[Long] = None
+  var longestSQLDuration: Long = Long.MinValue
   val writeDataFormat: ArrayBuffer[String] = ArrayBuffer[String]()
 
   // jobId to job info
@@ -148,11 +149,17 @@ class QualificationAppInfo(
     sqlIDToDataSetOrRDDCase.foreach { case k =>
       logWarning(s"k $k")
     }
-    sqlDurationTime.filterNot { case (sqlID, dur) =>
+    val validSums = sqlDurationTime.filterNot { case (sqlID, dur) =>
       // Avoid all negative durations in case a value was miscalculated.
       assert(dur >= -1)
       sqlIDToDataSetOrRDDCase.contains(sqlID) || dur < 0
-    }.values.sum
+    }
+    var sum = 0L;
+    validSums.values.foreach { v =>
+      longestSQLDuration = Math max (v, longestSQLDuration)
+      sum += v;
+    }
+    sum;
   }
 
   // The total task time for all tasks that ran during SQL dataframe
@@ -162,6 +169,10 @@ class QualificationAppInfo(
       sqlIDToDataSetOrRDDCase.contains(sqlID) || sqlDurationTime.getOrElse(sqlID, -1) == -1
     }
     validSums.values.map(dur => dur.totalTaskDuration).sum
+  }
+
+  private def getLongestSQLDuration(): Long = {
+    if (longestSQLDuration == Long.MinValue) 0 else longestSQLDuration
   }
 
   // Look at the total task times for all jobs/stages that aren't SQL or
@@ -340,7 +351,7 @@ class QualificationAppInfo(
         readScoreHumanPercentRounded, notSupportFormatAndTypesString,
         getAllReadFileFormats, writeFormat, allComplexTypes, nestedComplexTypes,
         estimatedDuration, unsupportedDuration, speedupDuration, speedupFactor,
-        totalSpeedup, speedupBucket)
+        totalSpeedup, speedupBucket, getLongestSQLDuration())
     }
   }
   /*
@@ -584,7 +595,8 @@ case class QualificationSummaryInfo(
     speedupDuration: Long,
     speedupFactor: Double,
     totalSpeedup: Double,
-    speedupBucket: String)
+    speedupBucket: String,
+    longestSqlDuration: Long)
 
 object QualificationAppInfo extends Logging {
   def createApp(

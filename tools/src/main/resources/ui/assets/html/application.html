@@ -384,10 +384,10 @@
             <i class="fas fa-database"></i>
           </div>
           <div class="stats-data">
-            <div class="stats-number">{{qualInfo.durationCollection.sqlDFTaskDuration}}</div>
+            <div class="stats-number">{{qualInfo.durationCollection.sqlDFDuration}}</div>
             <div class="stats-change">
               <span class="stats-timeframe">Longest</span>
-              <span class="stats-percentage">N/A</span>
+              <span class="stats-percentage">{{qualInfo.durationCollection.longestSqlDuration}}</span>
             </div>
             <div class="stats-change">
               <span class="stats-percentage">{{qualInfo.durationCollection.sqlDurationProblems}}</span>

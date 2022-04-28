@@ -245,6 +245,10 @@ function processRawData(rawRecords, appInfoRawRecords) {
     var appRecord = JSON.parse(JSON.stringify(rawRecords[i]));
     appRecord["estimated"] = appRecord["appDurationEstimated"];
     appRecord["cpuPercent"] = appRecord["executorCPUPercent"];
+    // set default longestSqlDuration for backward compatibility
+    if (!appRecord.hasOwnProperty("longestSqlDuration")) {
+      appRecord["longestSqlDuration"] = 0;
+    }
     appRecord["durationCollection"] = {
       "appDuration": formatDuration(appRecord["appDuration"]),
       "sqlDFDuration": formatDuration(appRecord["sqlDataFrameDuration"]),
@@ -257,6 +261,7 @@ function processRawData(rawRecords, appInfoRawRecords) {
       "accelerationOpportunity": formatDuration(calculateAccOpportunityAsDuration(appRecord)),
       "unsupportedDuration": formatDuration(appRecord["unsupportedDuration"]),
       "speedupDuration": formatDuration(appRecord["speedupDuration"]),
+      "longestSqlDuration": formatDuration(appRecord["longestSqlDuration"]),
     }
     setAppInfoRecord(appRecord, appInfoMap);
     maxOpportunity =
