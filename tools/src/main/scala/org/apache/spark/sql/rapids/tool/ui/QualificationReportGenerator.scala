@@ -69,13 +69,16 @@ class QualificationReportGenerator(
     implicit val formats = DefaultFormats
     val appInfoRecs = Serialization.write(provider.getListing())
     val infoSummary = Serialization.write(provider.getAllApplicationsInfo())
+    val dataSourceInfo = Serialization.write(provider.getDataSourceInfo())
     val qualInfoSummaryContent =
       s"""
          |
-         |let appInfoRecords =\n
-         |\t${appInfoRecs};\n
-         |let qualificationRecords =\n
+         |let appInfoRecords =
+         |\t${appInfoRecs};
+         |let qualificationRecords =
          |\t${infoSummary};
+         |let dataSourceInfoRecords =
+         |\t${dataSourceInfo};
        """.stripMargin
     val outputFile = new File(destinationFolder, s"js/mock-data.js")
     val pw = new PrintWriter(outputFile)

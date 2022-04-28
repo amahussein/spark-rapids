@@ -598,6 +598,10 @@ case class QualificationSummaryInfo(
     speedupBucket: String,
     longestSqlDuration: Long)
 
+case class AppDataSourceCase(
+    appId: String,
+    dsData: Seq[DataSourceCase])
+
 object QualificationAppInfo extends Logging {
   def createApp(
       path: EventLogInfo,

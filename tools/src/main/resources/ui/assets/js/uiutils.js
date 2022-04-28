@@ -170,6 +170,7 @@ let recommendationsMap = new Map(createRecommendationGroups(recommendationContai
 let sparkUsers = new Map();
 let appInfoMap = new Map();
 
+
 /* define constants for the tables configurations */
 let defaultPageLength = 20;
 let defaultLengthMenu = [[20, 40, 60, 100, -1], [20, 40, 60, 100, "All"]];
@@ -277,6 +278,27 @@ function processRawData(rawRecords, appInfoRawRecords) {
   setGlobalReportSummary(processedRecords);
   return processedRecords;
 }
+
+function processReadFormatSchema(rawDSInfoRecords) {
+  let rawDSInfoRecordsContainer = {
+    records: rawDSInfoRecords,
+    allFormats: new Map()
+  }
+  for (let i in rawDSInfoRecords) {
+    let dsRec = rawDSInfoRecords[i]
+    for (let j in dsRec["dsData"]) {
+      let readRec = dsRec["dsData"][j];
+      rawDSInfoRecordsContainer.allFormats.set(readRec["format"], 'true');
+    }
+  }
+  return rawDSInfoRecordsContainer;
+}
+
+function getDataSourceInfoForApp(dsInfoRecords, appID) {
+  let appDSRecord = dsInfoRecords.find(dsInfo => dsInfo.appId == appID);
+  return appDSRecord;
+}
+
 
 function setGlobalReportSummary(processedApps) {
   let totalEstimatedApps = 0;

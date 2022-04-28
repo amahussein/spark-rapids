@@ -19,6 +19,7 @@
 var applicationUIRecord = null;
 var applicationInfoRecord = null;
 var attemptsArray = null;
+let dsInfoRecords = null;
 
 function fetchApplicationData(id) {
   return attemptsArray.find(app => app.appId === id);
@@ -36,6 +37,9 @@ function getBadgeName(appRecord) {
 
 $(document).ready(function(){
   attemptsArray = processRawData(qualificationRecords, appInfoRecords);
+  let dsInfoContainer = processReadFormatSchema(dataSourceInfoRecords);
+  dsInfoRecords = dsInfoContainer.records;
+
   const queryString = window.location.search;
   const urlParams = new URLSearchParams(queryString);
   const appID = urlParams.get('app_id')
@@ -44,7 +48,7 @@ $(document).ready(function(){
   // get the appData
   applicationUIRecord = fetchApplicationData(appID);
   applicationInfoRecord = fetchApplicationInfoData(appID);
-
+  let appDsInfoRec = getDataSourceInfoForApp(dsInfoRecords, appID);
   // set the template of the report header
   let combinedRec = {
     "appInfo":  applicationInfoRecord,
@@ -61,4 +65,28 @@ $(document).ready(function(){
   var text = Mustache.render(template, combinedRec);
 
   $("#app-report-page-header").html(text);
+  let dataArray = appDsInfoRec["dsData"];
+  let dataSrcTableConf = {
+    info: true,
+    paging: (dataArray.length > defaultPageLength),
+    "data": dataArray,
+    "columns": [
+      {
+        data: "sqlID",
+      },
+      {
+        data: "format",
+      },
+      {
+        data: "location",
+      },
+      {
+        data: "pushedFilters",
+      },
+      {
+        data: "schema",
+      },
+    ],
+  };
+  let appDSInfoTable = $('#app-details-datasourceinfo-table').DataTable(dataSrcTableConf);
 });
