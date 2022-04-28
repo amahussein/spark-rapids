@@ -24,50 +24,52 @@ function resetCollapsableGrps(groupArr, flag) {
  * HTML template used to render the application details in the collapsible
  * rows of the GPURecommendationTable.
  */
-let recommendTblAppDetailsTemplate =
-    '<table class=\"table table-striped compact dataTable style=padding-left:50px;\">' +
-    '  <thead>' +
-    '    <tr>' +
-    '      <th scope=\"col\">#</th>' +
-    '      <th scope=\"col\">Value</th>' +
-    '      <th scope=\"col\">Description</th>' +
-    '    </tr>' +
-    '  </thead>' +
-    '  <tbody>' +
-    '    <tr>' +
-    '      <th scope=\"row\">Total Speed-up</th>' +
-    '      <td> {{totalSpeedup}} </td>' +
-    '      <td> Speedup factor estimated for the app. Calculated as ' +
-    '           <math><mfrac><mn>App-Duration</mn><mi>GPU-Estimated-Duration</mi></mfrac></math></td>' +
-    '    </tr>' +
-    '    <tr>' +
-    '      <th scope=\"row\">App Duration</th>' +
-    '      <td> {{durationCollection.appDuration}} </td>' +
-    '      <td> Wall-Clock time measured since the application starts till it is completed. If an app is not completed an estimated completion time would be computed. </td>' +
-    '    </tr>' +
-    '    <tr>' +
-    '      <th scope=\"row\">SQL Duration</th>' +
-    '      <td> {{durationCollection.sqlDFDuration}} </td>' +
-    '      <td> Wall-Clock time spent in tasks of SQL Dataframe operations. </td>' +
-    '    </tr>' +
-    '    <tr>' +
-    '      <th scope=\"row\">GPU Opportunity</th>' +
-    '      <td> {{durationCollection.accelerationOpportunity}} </td>' +
-    '      <td> Wall-Clock time that shows how much of the SQL duration can be speed-up on the GPU. </td>' +
-    '    </tr>' +
-    '    <tr>' +
-    '      <th scope=\"row\">GPU Estimated Duration</th>' +
-    '      <td> {{durationCollection.estimatedDurationWallClock}} </td>' +
-    '      <td> Predicted runtime of the app if it was run on GPU </td>' +
-    '    </tr>' +
-    '  </tbody>' +
-    '</table>' +
-    '<div class=\" mt-3\">' +
-    '  <a href=\"{{attemptDetailsURL}}\" target=\"_blank\" class=\"btn btn-secondary btn-lg btn-block mb-1\">Go To Full Details</button>' +
-    '</div>';
+function getExpandedAppDetails(rowData) {
+  let content = '<table class=\"display compact style=padding-left:50px;\">' +
+  '  <thead>' +
+  '    <tr>' +
+  '      <th scope=\"col\">#</th>' +
+  '      <th scope=\"col\">Value</th>' +
+  '      <th scope=\"col\">Description</th>' +
+  '    </tr>' +
+  '  </thead>' +
+  '  <tbody>' +
+  '    <tr>' +
+  '      <th scope=\"row\">Total Speed-up</th>' +
+  '      <td> {{totalSpeedup}} </td>' +
+  '      <td> ' + toolTipsValues.gpuRecommendations.details.mathFormatted.totalSpeedup + '</td>' +
+  '    </tr>' +
+  '    <tr>' +
+  '      <th scope=\"row\">App Duration</th>' +
+  '      <td> {{durationCollection.appDuration}} </td>' +
+  '      <td> ' + toolTipsValues.gpuRecommendations["App Duration"] + '</td>' +
+  '    </tr>' +
+  '    <tr>' +
+  '      <th scope=\"row\">SQL Duration</th>' +
+  '      <td> {{durationCollection.sqlDFDuration}} </td>' +
+  '      <td> ' + toolTipsValues.gpuRecommendations.details.sqlDFDuration + '</td>' +
+  '    </tr>' +
+  '    <tr>' +
+  '      <th scope=\"row\">GPU Opportunity</th>' +
+  '      <td> {{durationCollection.accelerationOpportunity}} </td>' +
+  '      <td> ' + toolTipsValues.gpuRecommendations.details.gpuOpportunity + '</td>' +
+  '    </tr>' +
+  '    <tr>' +
+  '      <th scope=\"row\">GPU Estimated Duration</th>' +
+  '      <td> {{durationCollection.estimatedDurationWallClock}} </td>' +
+  '      <td> ' + toolTipsValues.gpuRecommendations.details.estimatedDuration + '</td>' +
+  '    </tr>' +
+  '  </tbody>' +
+  '</table>' +
+  '<div class=\" mt-3\">' +
+  '  <a href=\"{{attemptDetailsURL}}\" target=\"_blank\" class=\"btn btn-secondary btn-lg btn-block mb-1\">Go To Full Details</button>' +
+  '</div>';
+  return content;
+}
+
 
 function formatAppGPURecommendation ( rowData) {
-  var text = Mustache.render(recommendTblAppDetailsTemplate, rowData);
+  var text = Mustache.render(getExpandedAppDetails(rowData), rowData);
   return text;
 }
 
@@ -176,14 +178,14 @@ $(document).ready(function(){
           }
           return data;
         },
-        fnCreatedCell: (nTd, sData, oData, _ignored_iRow, _ignored_iCol) => {
-          let toolTipVal = toolTipsValues['gpuRecommendations']['Opportunity'];
-          $(nTd).attr('data-toggle', "tooltip");
-          $(nTd).attr('data-placement', "top");
-          $(nTd).attr('html', "true");
-          $(nTd).attr('data-html', "true");
-          $(nTd).attr('title', toolTipVal);
-        }
+        // fnCreatedCell: (nTd, sData, oData, _ignored_iRow, _ignored_iCol) => {
+        //   let toolTipVal = toolTipsValues['gpuRecommendations']['GPU Opportunity'];
+        //   $(nTd).attr('data-toggle', "tooltip");
+        //   $(nTd).attr('data-placement', "top");
+        //   $(nTd).attr('html', "true");
+        //   $(nTd).attr('data-html', "true");
+        //   $(nTd).attr('title', toolTipVal);
+        // }
       },
       {
         name: recommendGPUColName,
