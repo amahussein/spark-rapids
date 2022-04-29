@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, NVIDIA CORPORATION.
+ * Copyright (c) 2021-2022, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -109,8 +109,8 @@ Usage: java -cp rapids-4-spark-tools_2.12-<version>.jar:$SPARK_HOME/jars/*
   val reportReadSchema: ScallopOption[Boolean] =
     opt[Boolean](required = false,
       descr = "Whether to output the read formats and datatypes to the CSV file. This can " +
-        "be very long. Default is false.",
-      default = Some(false))
+        "be very long. Default is false unless UI is enabled.",
+      default = Some(QualificationArgs.DEFAULT_UI_ENABLED))
   val sparkProperty: ScallopOption[List[String]] =
     opt[List[String]](required = false,
       descr = "Filter applications based on certain Spark properties that were set during " +
@@ -130,6 +130,10 @@ Usage: java -cp rapids-4-spark-tools_2.12-<version>.jar:$SPARK_HOME/jars/*
   val userName: ScallopOption[String] =
     opt[String](required = false,
       descr = "Applications which a particular user has submitted." )
+  val uiEnabled: ScallopOption[Boolean] =
+    opt[Boolean](required = false,
+      descr = "Whether to render the report into HTML pages. Default is True",
+      default = Some(QualificationArgs.DEFAULT_UI_ENABLED))
 
   validate(order) {
     case o if (QualificationArgs.isOrderAsc(o) || QualificationArgs.isOrderDesc(o)) => Right(Unit)
@@ -165,6 +169,7 @@ Usage: java -cp rapids-4-spark-tools_2.12-<version>.jar:$SPARK_HOME/jars/*
 
 object QualificationArgs {
   val DEFAULT_READ_SCORE_PERCENT = 20
+  val DEFAULT_UI_ENABLED = true
 
   def isOrderAsc(order: String): Boolean = {
     order.toLowerCase.startsWith("asc")

@@ -17,6 +17,7 @@
 package org.apache.spark.sql.rapids.tool.qualification
 
 import scala.collection.mutable.{ArrayBuffer, HashMap}
+import scala.util.Random
 
 import com.nvidia.spark.rapids.tool.EventLogInfo
 import com.nvidia.spark.rapids.tool.profiling._
@@ -26,7 +27,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent}
 import org.apache.spark.sql.execution.SparkPlanInfo
-import org.apache.spark.sql.execution.ui.SparkPlanGraph
+import org.apache.spark.sql.execution.ui.{SparkPlanGraph, SparkPlanGraphCluster, SparkPlanGraphNode}
 import org.apache.spark.sql.rapids.tool.{AppBase, ToolUtils}
 
 class QualificationAppInfo(
@@ -36,11 +37,25 @@ class QualificationAppInfo(
     readScorePercent: Int)
   extends AppBase(eventLogInfo, hadoopConf) with Logging {
 
+  // Determine input column types from read
+  // Some could be partitioned data so would have to try to infer.. but what types are supported:
+  //   partition data types have to be atomic
+  //   https://github.com/apache/spark/blob/master/sql/core
+  //   /src/main/scala/org/apache/spark/sql/execution/datasources/PartitioningUtils.scala#L559
+  //
+
+
+
   var appId: String = ""
   var isPluginEnabled = false
   var lastJobEndTime: Option[Long] = None
+  var aggJobTime: Option[Long] = None
   var lastSQLEndTime: Option[Long] = None
+  var longestSQLDuration: Long = Long.MinValue
   val writeDataFormat: ArrayBuffer[String] = ArrayBuffer[String]()
+
+  // jobId to job info
+  val jobIdToInfo = new HashMap[Int, JobInfoClass]()
 
   var appInfo: Option[QualApplicationInfo] = None
   val sqlStart: HashMap[Long, QualSQLExecutionInfo] = HashMap[Long, QualSQLExecutionInfo]()
@@ -49,6 +64,9 @@ class QualificationAppInfo(
   val sqlDurationTime: HashMap[Long, Long] = HashMap.empty[Long, Long]
 
   val sqlIDToTaskEndSum: HashMap[Long, StageTaskQualificationSummary] =
+    HashMap.empty[Long, StageTaskQualificationSummary]
+
+  val stageIdToTaskEndSum: HashMap[Long, StageTaskQualificationSummary] =
     HashMap.empty[Long, StageTaskQualificationSummary]
 
   val stageIdToSqlID: HashMap[Int, Long] = HashMap.empty[Int, Long]
@@ -125,9 +143,23 @@ class QualificationAppInfo(
   // if the SQL contains a dataset, then duration for it is 0
   // for the SQL dataframe duration
   private def calculateSqlDataframeDuration: Long = {
-    sqlDurationTime.filterNot { case (sqlID, dur) =>
-      sqlIDToDataSetOrRDDCase.contains(sqlID) || dur == -1
-    }.values.sum
+    sqlDurationTime.foreach { case (k, v) =>
+      logWarning(s"k $k v: $v")
+    }
+    sqlIDToDataSetOrRDDCase.foreach { case k =>
+      logWarning(s"k $k")
+    }
+    val validSums = sqlDurationTime.filterNot { case (sqlID, dur) =>
+      // Avoid all negative durations in case a value was miscalculated.
+      assert(dur >= -1)
+      sqlIDToDataSetOrRDDCase.contains(sqlID) || dur < 0
+    }
+    var sum = 0L;
+    validSums.values.foreach { v =>
+      longestSQLDuration = Math max (v, longestSQLDuration)
+      sum += v;
+    }
+    sum;
   }
 
   // The total task time for all tasks that ran during SQL dataframe
@@ -137,6 +169,50 @@ class QualificationAppInfo(
       sqlIDToDataSetOrRDDCase.contains(sqlID) || sqlDurationTime.getOrElse(sqlID, -1) == -1
     }
     validSums.values.map(dur => dur.totalTaskDuration).sum
+  }
+
+  private def getLongestSQLDuration(): Long = {
+    if (longestSQLDuration == Long.MinValue) 0 else longestSQLDuration
+  }
+
+  // Look at the total task times for all jobs/stages that aren't SQL or
+  // SQL but dataset or rdd
+  private def calculateNonSQLTaskDataframeDuration(taskDFDuration: Long): Long = {
+    val allTaskTime = stageIdToTaskEndSum.values.map(_.totalTaskDuration).sum
+
+    val validSums = sqlIDToTaskEndSum.filter { case (sqlID, _) =>
+      sqlIDToDataSetOrRDDCase.contains(sqlID) || sqlDurationTime.getOrElse(sqlID, -1) == -1
+    }
+    val taskTimeDataSetOrRDD = validSums.values.map(dur => dur.totalTaskDuration).sum
+    // TODO make more efficient
+    val res = allTaskTime - taskTimeDataSetOrRDD - taskDFDuration
+    assert(res >= 0)
+    res
+  }
+
+  // Assume that overhead is the all time windows that do not overlap with a running job.
+  // TODO - What about shell where idle?
+  private def calculateOverHeadTime(startTime: Long): Long = {
+    // Simple algorithm:
+    // 1- sort all jobs by start/endtime.
+    // 2- Initialize Time(p) = app.StartTime
+    // 3- loop on the sorted seq. if the job.startTime is larger than the current Time(p): then this
+    //    must be considered a gap
+    // 4- Update Time(p) at the end of each iteration: Time(p+1) = Max(Time(p), job.endTime)
+    val sortedJobs = jobIdToInfo.values.toSeq.sortBy(_.startTime)
+    var pivot = startTime
+    var overhead : Long = 0
+
+    sortedJobs.foreach(job => {
+      val timeDiff = job.startTime - pivot
+      if (timeDiff > 0) {
+        overhead += timeDiff
+      }
+      // if jobEndTime is not set, use job.startTime
+      pivot = Math max(pivot, job.endTime.getOrElse(job.startTime))
+    })
+    logWarning(s"Calculated Overhead: ${overhead}")
+    overhead
   }
 
   private def getSQLDurationProblematic: Long = {
@@ -188,20 +264,43 @@ class QualificationAppInfo(
     }.getOrElse(1.0)
   }
 
+  // TODO calculate the unsupported operator task duration, going to very hard
+  // for now it is a helper to generate random values for the POC. The values have to be
+  // [0, sqlDataframeTaskDuration[
+  private def calculateUnsupportedDuration(upperBound: Long = 0): Long = {
+    (upperBound * Random.nextDouble().abs).toLong
+  }
+
+  // TODO calculate speedup_factor - which is average of operator factors???
+  // For now it is a helper to generate random values for the POC. Returns rounded value
+  private def calculateSpeedupFactor(bounds: (Double, Double) = (1.0, 10.0)): Double = {
+    bounds._1 + (bounds._2 - bounds._1) *  Random.nextDouble().abs
+  }
   /**
    * Aggregate and process the application after reading the events.
    * @return Option of QualificationSummaryInfo, Some if we were able to process the application
    *         otherwise None.
    */
-  def aggregateStats(): Option[QualificationSummaryInfo] = {
+  def aggregateStats: Option[QualificationSummaryInfo] = {
     appInfo.map { info =>
       val appDuration = calculateAppDuration(info.startTime).getOrElse(0L)
       val sqlDataframeDur = calculateSqlDataframeDuration
+      assert(appDuration >= 0 && sqlDataframeDur >= 0 && appDuration >= sqlDataframeDur)
+      // wall clock time
       val executorCpuTimePercent = calculateCpuTimePercent
       val endDurationEstimated = this.appEndTime.isEmpty && appDuration > 0
       val sqlDurProblem = getSQLDurationProblematic
       val readScoreRatio = calculateReadScoreRatio
+
       val sqlDataframeTaskDuration = calculateTaskDataframeDuration
+      val noSQLDataframeTaskDuration =
+        calculateNonSQLTaskDataframeDuration(sqlDataframeTaskDuration)
+      val overheadTime = calculateOverHeadTime(info.startTime)
+      val nonSQLDuration = noSQLDataframeTaskDuration + overheadTime
+      logWarning(s"\n\tnonSQLDuration: ${nonSQLDuration}" +
+        s"\n\toverheadTime: ${overheadTime}" +
+        s"\n\tnoSQLDataframeTaskDuration: ${noSQLDataframeTaskDuration}" +
+        s"\n\tsqlDataframeTaskDuration: ${sqlDataframeTaskDuration} ")
       val readScoreHumanPercent = 100 * readScoreRatio
       val readScoreHumanPercentRounded = f"${readScoreHumanPercent}%1.2f".toDouble
       val score = calculateScore(readScoreRatio, sqlDataframeTaskDuration)
@@ -217,12 +316,186 @@ class QualificationAppInfo(
       val (allComplexTypes, nestedComplexTypes) = reportComplexTypes
       val problems = getAllPotentialProblems(getPotentialProblemsForDf, nestedComplexTypes)
 
+
+      // gpuUnsupportedSQLTaskDuration = ???
+      val unsupportedDuration = calculateUnsupportedDuration(sqlDataframeTaskDuration)
+      val speedupDuration = sqlDataframeTaskDuration - unsupportedDuration
+      val speedupFactor = calculateSpeedupFactor()
+      logWarning(
+        s"\n\tunsupported Duration is: ${unsupportedDuration}" +
+          s"\n\tspeedupDuration: ${speedupDuration}" +
+          s"\n\taverage SpeedupFactor is: ${speedupFactor}")
+      val estimatedDuration = (speedupDuration/speedupFactor) + unsupportedDuration + nonSQLDuration
+      logWarning(s"estimated duration is: $estimatedDuration")
+      logWarning(s"speedupDur/factor duration is: ${speedupDuration/speedupFactor}")
+
+      val appTaskDuration = nonSQLDuration + sqlDataframeTaskDuration
+      logWarning(
+        s"noon sql dur is: $nonSQLDuration sql dataframe task dur is $sqlDataframeTaskDuration")
+      logWarning(s"appTaskDuration is: $appTaskDuration")
+      val totalSpeedup = (math floor appTaskDuration / estimatedDuration * 1000) / 1000
+      //val totalSpeedup = appTaskDuration / estimatedDuration
+      logWarning(s"total speedup : $totalSpeedup")
+      // recommendation
+      val speedupBucket = if (totalSpeedup > 3) {
+        "GREEN"
+      } else if (totalSpeedup > 1.25) {
+        "YELLOW"
+      } else {
+        "RED"
+      }
       new QualificationSummaryInfo(info.appName, appId, scoreRounded, problems,
-        sqlDataframeDur, sqlDataframeTaskDuration, appDuration, executorCpuTimePercent,
+        sqlDataframeDur, sqlDataframeTaskDuration, nonSQLDuration,
+        appDuration, executorCpuTimePercent,
         endDurationEstimated, sqlDurProblem, failedIds, readScorePercent,
         readScoreHumanPercentRounded, notSupportFormatAndTypesString,
-        getAllReadFileFormats, writeFormat, allComplexTypes, nestedComplexTypes)
+        getAllReadFileFormats, writeFormat, allComplexTypes, nestedComplexTypes,
+        estimatedDuration, unsupportedDuration, speedupDuration, speedupFactor,
+        totalSpeedup, speedupBucket, getLongestSQLDuration())
     }
+  }
+  /*
+    private def parseSingleExpression(exprStr: String): Unit = {
+      // val Pattern = """\(.*\)""".r
+      val Pattern =
+       """(?=\()(?=((?:(?=.*?\((?!.*?\2)(.*\)(?!.*\3).*))(?=.*?\)(?!.*?\3)(.*)).)+?.*?(?=\2)[^(]*(?=\3$)))""".r
+
+      val Pattern = """(?=\()(?:(?=.*?\((?!.*?\1)(.*\)(?!.*\2).*))(?=.*?\)(?!.*?\2)(.*)).)+?.*?(?=\1)[^(]*(?=\2$)""".r
+
+      exprStr match {
+        case Pattern(c) => println(c)
+        case _ =>
+      }
+    }
+
+   */
+  private def parseExpression(exprStr: String): Unit = {
+
+    // Filter ((isnotnull(s_state#688) AND (s_state#688 = TN)) AND isnotnull(s_store_sk#664))
+
+    // can we split on AND/OR/NOT
+    val exprSepAND = if (exprStr.contains("AND")) {
+      exprStr.split(" AND ").map(_.trim)
+    } else {
+      Array(exprStr)
+    }
+    val exprSplit = if (exprStr.contains(" OR ")) {
+      exprSepAND.flatMap(_.split(" OR ").map(_.trim))
+    } else {
+      exprSepAND
+    }
+    // ((isnotnull(s_state#688)
+    // (s_state#688 = TN))
+    // isnotnull(s_store_sk#664))
+    val paranRemoved = exprSplit.map(_.replaceAll("""^\(+""", "").replaceAll("""\)\)$""", ")"))
+    // isnotnull(s_state#688)
+    // s_state#688 = TN)
+    // isnotnull(s_store_sk#664)
+
+    paranRemoved.foreach { case expr =>
+      if (expr.contains(" ")) {
+        // likely some conditional expression
+        // TODO - add in artichmetic stuff (- / * )
+        // TODO - what about years and literals?
+        // TODO do we need to match on more then words and #?
+        val pattern = """([\w#]+) ([+=<>|]+) ([\w#]+)""".r
+        pattern.findFirstMatchIn(expr) match {
+          case Some(func) =>
+            logWarning(s" found expr: $func")
+            if (func.groupCount < 3) {
+              logError("found expr but its not the entire thing, not sure what is going on")
+            }
+            val first = func.group(1)
+            val predicate = func.group(2)
+            val second = func.group(3)
+            // check for variable
+            if (first.contains("#") || second.contains("#")) {
+              logWarning(s"expr contains # $first or $second")
+
+            } // else if ???
+            val predStr = predicate match {
+              case "=" => "EqualTo"
+              case "<=>" => "EqualNullSafe"
+              case "<" => "LessThan"
+              case ">" => "GreaterThan"
+              case "<=" => "LessThanOrEqual"
+              case ">=" => "GreaterThanOrEqual"
+            }
+            logWarning(s"predicate string is $predStr")
+          // TODO - lookup function name
+          case None => logWarning("not sure what this is")
+        }
+
+      } else {
+        // likely some function call
+        val pattern = """(\w+)\(.*\)""".r
+        pattern.findFirstMatchIn(expr) match {
+          case Some(func) =>
+            logWarning(s" found func: $func")
+            if (expr.length != func.group(0).length || func.groupCount == 0) {
+              logError("found function but its not the entire thing, not sure what is going on")
+            }
+            val funcName = func.group(1)
+          // TODO - lookup function name
+          case None => logWarning("not sure what this is")
+        }
+
+      }
+    }
+
+    /*
+    val tempStringBuilder = new StringBuilder()
+    val individualExprs: ArrayBuffer[String] = new ArrayBuffer()
+    var angleBracketsCount = 0
+    var parenthesesCount = 0
+    var parenAtBeginning = false
+    var previousChar: Option[Char] = None
+    for ((char, index) <- exprStr.zipWithIndex) {
+      char match {
+        case '<' => angleBracketsCount += 1
+        case '>' => angleBracketsCount -= 1
+        // If the schema has decimals, Example decimal(6,2) then we have to make sure it has both
+        // opening and closing parentheses(unless the string is incomplete due to V2 reader).
+        case '(' =>
+          if (index == 0) {
+            parenAtBeginning = true
+          }
+          if (previousChar.nonEmpty && (previousChar != ' ' && previousChar != '(' && index != 0)) {
+            // this should be as part of an expression
+          } else {
+            // this should be as part of a grouping
+          }
+          parenthesesCount += 1
+        case ')' =>
+          parenthesesCount -= 1
+
+        case ' ' =>
+          // end of a expr, is this true or can have space in side expr where 2 parameters?
+          // func(one, two)
+          logWarning(" found space")
+        case _ =>
+      }
+      if (angleBracketsCount == 0 && parenthesesCount == 0 && char.equals(' ')) {
+        individualExprs += tempStringBuilder.toString
+        tempStringBuilder.setLength(0)
+      } else {
+        tempStringBuilder.append(char);
+      }
+      previousChar = Some(char)
+    }
+
+     */
+  }
+
+  // FilterExec(condition: Expression, child: SparkPlan)
+  // Filter ((isnotnull(s_state#688) AND (s_state#688 = TN)) AND isnotnull(s_store_sk#664))
+  private def processFilterExec(node: SparkPlanGraphNode): Unit = {
+    val expr = node.desc.replaceFirst("Filter ", "")
+    parseExpression(expr)
+  }
+
+  private def processUnknownExec(node: SparkPlanGraphNode): Unit = {
+    // assume its something we don't support
   }
 
   private[qualification] def processSQLPlan(sqlID: Long, planInfo: SparkPlanInfo): Unit = {
@@ -230,6 +503,20 @@ class QualificationAppInfo(
     val planGraph = SparkPlanGraph(planInfo)
     val allnodes = planGraph.allNodes
     for (node <- allnodes) {
+      node match {
+        case f if (f.name == "Filter") => processFilterExec(f)
+        case _ =>
+      }
+      if (node.isInstanceOf[SparkPlanGraphCluster]) {
+        val ch = node.asInstanceOf[SparkPlanGraphCluster].nodes
+        logWarning(s"graph node ${node.name} desc: ${node.desc} id: " +
+          s"${node.id} children graph cluster: ${ch.map(_.name).mkString(",")}")
+
+      } else {
+        logWarning(s"graph node ${node.name} desc: ${node.desc} id: ${node.id}")
+      }
+
+      // TODO - likely can combine some code below with some of the above matching
       checkGraphNodeForReads(sqlID, node)
       if (isDataSetOrRDDPlan(node.desc)) {
         sqlIDToDataSetOrRDDCase += sqlID
@@ -290,6 +577,7 @@ case class QualificationSummaryInfo(
     potentialProblems: String,
     sqlDataFrameDuration: Long,
     sqlDataframeTaskDuration: Long,
+    nonSqlTaskDurationAndOverhead: Long,
     appDuration: Long,
     executorCpuTimePercent: Double,
     endDurationEstimated: Boolean,
@@ -301,7 +589,18 @@ case class QualificationSummaryInfo(
     readFileFormats: String,
     writeDataFormat: String,
     complexTypes: String,
-    nestedComplexTypes: String)
+    nestedComplexTypes: String,
+    estimatedDuration: Double,
+    unsupportedDuration: Long,
+    speedupDuration: Long,
+    speedupFactor: Double,
+    totalSpeedup: Double,
+    speedupBucket: String,
+    longestSqlDuration: Long)
+
+case class AppDataSourceCase(
+    appId: String,
+    dsData: Seq[DataSourceCase])
 
 object QualificationAppInfo extends Logging {
   def createApp(
@@ -310,22 +609,22 @@ object QualificationAppInfo extends Logging {
       pluginTypeChecker: Option[PluginTypeChecker],
       readScorePercent: Int): Option[QualificationAppInfo] = {
     val app = try {
-        val app = new QualificationAppInfo(Some(path), Some(hadoopConf), pluginTypeChecker,
-          readScorePercent)
-        logInfo(s"${path.eventLog.toString} has App: ${app.appId}")
-        Some(app)
-      } catch {
-        case json: com.fasterxml.jackson.core.JsonParseException =>
-          logWarning(s"Error parsing JSON: ${path.eventLog.toString}")
-          None
-        case il: IllegalArgumentException =>
-          logWarning(s"Error parsing file: ${path.eventLog.toString}", il)
-          None
-        case e: Exception =>
-          // catch all exceptions and skip that file
-          logWarning(s"Got unexpected exception processing file: ${path.eventLog.toString}", e)
-          None
-      }
+      val app = new QualificationAppInfo(Some(path), Some(hadoopConf), pluginTypeChecker,
+        readScorePercent)
+      logInfo(s"${path.eventLog.toString} has App: ${app.appId}")
+      Some(app)
+    } catch {
+      case json: com.fasterxml.jackson.core.JsonParseException =>
+        logWarning(s"Error parsing JSON: ${path.eventLog.toString}")
+        None
+      case il: IllegalArgumentException =>
+        logWarning(s"Error parsing file: ${path.eventLog.toString}", il)
+        None
+      case e: Exception =>
+        // catch all exceptions and skip that file
+        logWarning(s"Got unexpected exception processing file: ${path.eventLog.toString}", e)
+        None
+    }
     app
   }
 }
