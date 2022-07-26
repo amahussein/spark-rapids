@@ -1,0 +1,57 @@
+<!--
+ Copyright (c) 2022, NVIDIA CORPORATION.
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<script id="datasource-report-template" type="text/html">
+  <table id="datasource-report-table" class="table table-striped compact">
+    <thead>
+    <tr>
+      {{#showAppIndexColumn}}
+      <th>
+        <span data-toggle="tooltip" data-placement="top" title="Index of this application.">
+          App Index
+        </span>
+      </th>
+      {{/showAppIndexColumn}}
+      <th>
+        <span data-toggle="tooltip" data-placement="top" title="SQL ID.">
+          SqlID
+        </span>
+      </th>
+      <th>
+        <span data-toggle="tooltip" data-placement="top" title="Format of the Data Source">
+          Format
+        </span>
+      </th>
+      <th>
+        <span data-toggle="tooltip" data-placement="top" title="Path of the Data Source.">
+          Location
+        </span>
+      </th>
+      <th>
+        <span data-toggle="tooltip" data-placement="top" title="Filtered pushed to the level of the data source.">
+          Pushed Filters
+        </span>
+      </th>
+      <th>
+        <span data-toggle="tooltip" data-placement="top" title="The duration time of this application.">
+          Schema
+        </span>
+      </th>
+    </thead>
+    <tbody>
+    </tbody>
+  </table>
+</script>
