@@ -23,6 +23,7 @@ import ai.rapids.cudf.{Cuda, HostColumnVector, NvtxColor, Table}
 import com.nvidia.spark.rapids.shims.ShimUnaryExecNode
 
 import org.apache.spark.TaskContext
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder, UnsafeProjection}
@@ -41,7 +42,8 @@ class AcceleratedColumnarToRowIterator(
     numInputBatches: GpuMetric,
     numOutputRows: GpuMetric,
     opTime: GpuMetric,
-    streamTime: GpuMetric) extends Iterator[InternalRow] with Arm with Serializable {
+    streamTime: GpuMetric,
+    debugDumpPath: String) extends Iterator[InternalRow] with Arm with Serializable with Logging {
   @transient private var pendingCvs: Queue[HostColumnVector] = Queue.empty
   // GPU batches read in must be closed by the receiver (us)
   @transient private var currentCv: Option[HostColumnVector] = None
@@ -89,6 +91,13 @@ class AcceleratedColumnarToRowIterator(
   }
 
   private[this] def setupBatch(cb: ColumnarBatch): Boolean = {
+    if (debugDumpPath.nonEmpty) {
+      val outputPath = DumpUtils.dumpToParquetFile(cb, debugDumpPath + "/accelinput-")
+      if (outputPath.nonEmpty) {
+        logError(s"DUMPED ACCELERATED COLUMNAR TO ROW INPUT TO ${outputPath.get}")
+      }
+    }
+
     numInputBatches += 1
     // In order to match the numOutputRows metric in the generated code we update
     // numOutputRows for each batch. This is less accurate than doing it at output
@@ -311,6 +320,8 @@ case class GpuColumnarToRowExec(
     STREAM_TIME -> createNanoTimingMetric(MODERATE_LEVEL, DESCRIPTION_STREAM_TIME),
     NUM_INPUT_BATCHES -> createMetric(DEBUG_LEVEL, DESCRIPTION_NUM_INPUT_BATCHES))
 
+  private val debugDumpPath = child.conf.getConfString("spark.rapids.debugPath", "")
+
   override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = gpuLongMetric(NUM_OUTPUT_ROWS)
     val numInputBatches = gpuLongMetric(NUM_INPUT_BATCHES)
@@ -318,7 +329,7 @@ case class GpuColumnarToRowExec(
     val streamTime = gpuLongMetric(STREAM_TIME)
 
     val f = GpuColumnarToRowExec.makeIteratorFunc(child.output, numOutputRows, numInputBatches,
-      opTime, streamTime)
+      opTime, streamTime, debugDumpPath)
 
     val cdata = child.executeColumnar()
     val rdata = if (exportColumnarRdd) {
@@ -361,7 +372,8 @@ object GpuColumnarToRowExec {
       numOutputRows: GpuMetric,
       numInputBatches: GpuMetric,
       opTime: GpuMetric,
-      streamTime: GpuMetric): Iterator[ColumnarBatch] => Iterator[InternalRow] = {
+      streamTime: GpuMetric,
+      debugDumpPath: String): Iterator[ColumnarBatch] => Iterator[InternalRow] = {
     if (CudfRowTransitions.areAllSupported(output) &&
         // For a small number of columns it is still best to do it the original way
         output.length > 4 &&
@@ -379,7 +391,7 @@ object GpuColumnarToRowExec {
         // Check that the accelerated transpose works correctly on the current CUDA device.
         if (isAcceleratedTransposeSupported) {
           new AcceleratedColumnarToRowIterator(output, batches, numInputBatches, numOutputRows,
-            opTime, streamTime).map(toUnsafe)
+            opTime, streamTime, debugDumpPath).map(toUnsafe)
         } else {
           new ColumnarToRowIterator(batches,
             numInputBatches, numOutputRows, opTime, streamTime).map(toUnsafe)
