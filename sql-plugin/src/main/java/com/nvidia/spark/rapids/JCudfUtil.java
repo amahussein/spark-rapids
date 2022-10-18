@@ -235,10 +235,10 @@ public final class JCudfUtil {
    */
   public static class RowOffsetsCalculator {
     private final Attribute[] attributes;
-    private int[] offsets;
+    private final int[] offsets;
     // moving cursor pointing to the current offset.
     private int byteCursor;
-    // the first column that has var-width size.
+    // the first column that has var-width size. It is initialized to INT.MAX_VALUE
     private int varSizeColIndex;
     // At what point validity data starts.
     private int validityBytesOffset;
@@ -251,25 +251,30 @@ public final class JCudfUtil {
       // This is in the context of constructing an object to get an estimate of the memory needed
       // by the row.
       this.attributes = attrArr;
+      this.offsets = offsetArr;
+      processAttributes();
+    }
+
+    private void processAttributes() {
       resetMeta();
-      initFixedWidthSection(offsetArr);
+      initFixedWidthSection();
+      calculateEstimateSize();
     }
 
     /**
      * Handles iterating on all the columns to advance the {@link #byteCursor}.
      * Then, it calculates the start offset of the validity and its size in bytes.
      * This method updates the following: {@link #byteCursor}, {@link #offsets},
-     * {@link #varSizeColIndex}, and all the fields related to the validity
-     *
-     * @param offsetArr if not NULL, it will be used to save the column offsets.
+     * {@link #varSizeColIndex}, and all the fields related to the validity.
+     * If {@link #offsets} is not null, it will be used to cache the calculated offsets.
      */
-    private void initFixedWidthSection(int[] offsetArr) {
-      if (offsetArr == null) {
+    private void initFixedWidthSection() {
+      if (this.offsets == null) {
         for (int i = 0; i < attributes.length; i++) {
           advanceColCursorAndGet(i);
         }
       } else {
-        this.offsets = offsetArr;
+        // capture the calculated offsets into teh array.
         for (int i = 0; i < attributes.length; i++) {
           offsets[i] = advanceColCursorAndGet(i);
         }
@@ -299,19 +304,17 @@ public final class JCudfUtil {
         byteCursor = res + length;
         return res;
       }
-      if (!hasVarSizeData()) {
-        // set the index to the first variable size column.
-        varSizeColIndex = ind;
-      }
+      // At this point, we know that the column is of variable size. Then, update the varSizeColIndex.
+      varSizeColIndex = Math.min(varSizeColIndex, ind);
       res = alignOffset(byteCursor, JCUDF_VAR_LENGTH_FIELD_ALIGNMENT);
       byteCursor = res + JCUDF_VAR_LENGTH_FIELD_SIZE;
       return res;
     }
 
     private void resetMeta() {
-      varSizeColIndex = attributes.length;
+      varSizeColIndex = Integer.MAX_VALUE;
       byteCursor = 0;
-      estimateRowSize = -1;
+      estimateRowSize = 0;
       validityBytesOffset = 0;
     }
 
@@ -325,7 +328,7 @@ public final class JCudfUtil {
      * The value calculated is 8-byte aligned since a JCUDF row is 8-byte aligned.
      * It loops on variable-width columns using a moving-cursor that represents the offset
      * of the data.
-     * Note that the calculation requires that {@link #initFixedWidthSection(int[])} has
+     * Note that the calculation requires that {@link #initFixedWidthSection()} has
      * been called at some point before. Otherwise, the {@link #byteCursor} will be 0.
      */
     private void calculateEstimateSize() {
@@ -369,7 +372,7 @@ public final class JCudfUtil {
      * @return true if the schema is non-empty and at least one column is variable-width size.
      */
     public boolean hasVarSizeData() {
-      return attributes.length > 0 && varSizeColIndex != attributes.length;
+      return varSizeColIndex != Integer.MAX_VALUE;
     }
 
     public int getValidityBytesOffset() {
@@ -383,11 +386,7 @@ public final class JCudfUtil {
      *
      * @return the estimate memory occupied by the row in bytes (8-bytes aligned).
      */
-    public synchronized int getEstimateSize() {
-      if (estimateRowSize < 0) {
-        // not initialized yet
-        calculateEstimateSize();
-      }
+    public int getEstimateSize() {
       return estimateRowSize;
     }
   }
