@@ -49,10 +49,9 @@ import java.util.Optional;
 public abstract class InternalRowToColumnarBatchIterator implements Iterator<ColumnarBatch> {
   protected final Iterator<InternalRow> input;
   protected UnsafeRow pending = null;
-  private final int initialNumRowsEstimate;
-  private final long initialDataLength;
-  protected int numRowsEstimate;
-  protected long dataLength;
+  protected final int rowSizeEstimate;
+  protected final int numRowsEstimate;
+  protected final long dataLength;
   protected final long goalTargetSize;
   protected final DType[] rapidsTypes;
   protected final DataType[] outputTypes;
@@ -76,13 +75,13 @@ public abstract class InternalRowToColumnarBatchIterator implements Iterator<Col
       GpuMetric numOutputBatches) {
     this.input = input;
     JCudfUtil.RowOffsetsCalculator cudfRowEstimator = JCudfUtil.getRowOffsetsCalculator(schema);
-    int sizePerRowEstimate = cudfRowEstimator.getEstimateSize();
+    rowSizeEstimate = cudfRowEstimator.getEstimateSize();
     // caches if the row fits the CUDF kernel optimization
     fitsOptimizedConversion = JCudfUtil.fitsOptimizedConversion(cudfRowEstimator);
     goalTargetSize = goal.targetSizeBytes();
-    setBuffersCapacities(sizePerRowEstimate, goalTargetSize);
-    initialNumRowsEstimate = numRowsEstimate;
-    initialDataLength = dataLength;
+    numRowsEstimate =
+        (int) Math.max(1, Math.min(Integer.MAX_VALUE - 1, goalTargetSize / rowSizeEstimate));
+    dataLength = (long) rowSizeEstimate * numRowsEstimate;
     rapidsTypes = new DType[schema.length];
     outputTypes = new DataType[schema.length];
 
@@ -129,25 +128,23 @@ public abstract class InternalRowToColumnarBatchIterator implements Iterator<Col
     // that implements fillBatch.
     boolean fillBatchDone = false;
     int retryCount = 0;
+    long actualDataLength = dataLength;
+    int actualNumRows = numRowsEstimate;
+    int currRowSizeEstimate = rowSizeEstimate;
     while (!fillBatchDone) { // try until we find the correct size to allocate the dataBuffer
-      try (HostMemoryBuffer dataBuffer = HostMemoryBuffer.allocate(dataLength);
+      try (HostMemoryBuffer dataBuffer = HostMemoryBuffer.allocate(actualDataLength);
            HostMemoryBuffer offsetsBuffer =
-               HostMemoryBuffer.allocate(((long) numRowsEstimate + 1) * BYTES_PER_OFFSET)) {
+               HostMemoryBuffer.allocate(((long) actualNumRows + 1) * BYTES_PER_OFFSET)) {
 
-        int[] used = fillBatch(dataBuffer, offsetsBuffer);
+        int[] used = fillBatch(dataBuffer, offsetsBuffer, actualDataLength, actualNumRows);
         int dataOffset = used[0];
         int currentRow = used[1];
-        // if we fail to copy at least one row then we need to throw an exception
-        if (currentRow == 0 && pending != null) {
+        // if we fail to copy at least one row, it means that the allocated buffer cannot fit
+        // the current row. Throw and exception to increase the allocated buffer.
+        if (currentRow == 0) {
           throw new BufferOverflowException();
         }
         fillBatchDone = true;
-        if (retryCount > 0) {
-          // In case we hit the corner case, and we had to increase the dataLength, then we need
-          // to restore the original capacity so that we do not carry on with large memory buffers.
-          numRowsEstimate = initialNumRowsEstimate;
-          dataLength = initialDataLength;
-        }
 
         if (numInputRows != null) {
           numInputRows.add(currentRow);
@@ -188,15 +185,17 @@ public abstract class InternalRowToColumnarBatchIterator implements Iterator<Col
         // Handle corner case when the dataLength is too small to copy a single row.
         // We retry after doubling the bufferSize.
         // dataLength can be considered a rough estimate of a single row.
-        if (dataLength >= JCudfUtil.JCUDF_MAX_ROW_BUFFER_LENGTH) {
+        retryCount++;
+        if (actualDataLength >= JCudfUtil.JCUDF_MAX_ROW_BUFFER_LENGTH) {
           // proceed with throwing exception.
           throw new RuntimeException(
-              "JCudf row is too large to fit in MemoryBuffer", ex);
+              "JCudf row is too large to fit in MemoryBuffer. Retries count = " + retryCount, ex);
         }
-        long newRowSizeEst = Math.min(dataLength << 1, JCudfUtil.JCUDF_MAX_ROW_BUFFER_LENGTH);
+        currRowSizeEstimate = (int) Math.min(actualDataLength << 1, JCudfUtil.JCUDF_MAX_ROW_BUFFER_LENGTH);
         // Recalculate the dataLength based on the new size estimate
-        setBuffersCapacities(newRowSizeEst, goalTargetSize);
-        retryCount++;
+        actualNumRows =
+            (int) Math.max(1, Math.min(Integer.MAX_VALUE - 1, goalTargetSize / currRowSizeEstimate));
+        actualDataLength = (long) actualNumRows * currRowSizeEstimate;
       }
     }
     try (NvtxRange ignored = buildRange;
@@ -210,12 +209,6 @@ public abstract class InternalRowToColumnarBatchIterator implements Iterator<Col
     }
   }
 
-  protected void setBuffersCapacities(long sizePerRowEstimate, long targetSize) {
-    numRowsEstimate =
-        (int) Math.max(1, Math.min(Integer.MAX_VALUE - 1, targetSize / sizePerRowEstimate));
-    dataLength = sizePerRowEstimate * numRowsEstimate;
-  }
-
   /**
    * Fill a batch with data.  This is the abstraction point because it is faster to have a single
    * virtual function call per batch instead of one per row.
@@ -224,5 +217,9 @@ public abstract class InternalRowToColumnarBatchIterator implements Iterator<Col
    * @return an array of ints where the first index is the amount of data in bytes copied into
    * the data buffer and the second index is the number of rows copied into the buffers.
    */
-  public abstract int[] fillBatch(HostMemoryBuffer dataBuffer, HostMemoryBuffer offsetsBuffer);
+  public abstract int[] fillBatch(
+      HostMemoryBuffer dataBuffer,
+      HostMemoryBuffer offsetsBuffer,
+      long dataBufferLength,
+      int estimatedRowSize);
 }
