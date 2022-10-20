@@ -807,12 +807,12 @@ object GeneratedInternalRowToCudfRowIterator extends Logging {
          |        }
          |      }
          |      int numBytesUsedByRow = copyInto(row, dataBaseAddress + dataOffset, endDataAddress);
+         |      offsetsBuffer.setInt(offsetIndex, dataOffset);
+         |      offsetIndex += 4;
          |      if (numBytesUsedByRow < 0) {
          |        pending = row;
          |        done = true;
          |      } else {
-         |        offsetsBuffer.setInt(offsetIndex, dataOffset);
-         |        offsetIndex += 4;
          |        currentRow += 1;
          |        dataOffset += numBytesUsedByRow;
          |        done = !((dataLength - dataOffset - rowSizeEstimate >= 0) &&

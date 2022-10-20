@@ -53,8 +53,8 @@ public abstract class InternalRowToColumnarBatchIterator implements Iterator<Col
   // minimum size needed to be reserved for a row (including ones with variable width columns).
   protected final int rowSizeEstimate;
   // Caches the actual row size used successfully to allocate at least one row. This variable
-  // is always equal to rowSizeEstimate unless the dataBuffer cannot fit a single row. In the latter
-  // case, it will be GT rowSizeEstimate.
+  // is always EQ to rowSizeEstimate unless the dataBuffer cannot fit a single row. In the latter
+  // case, it will be GE rowSizeEstimate.
   // Note that: while this variable represents the adjusted bytes needed per row, still the
   //            rowSizeEstimate value is used to check if the remaining bytes can fit a new row.
   protected int adjustedRowSize;
@@ -91,7 +91,7 @@ public abstract class InternalRowToColumnarBatchIterator implements Iterator<Col
     // Check if the row fits the CUDF kernel optimization.
     fitsOptimizedConversion = JCudfUtil.fitsOptimizedConversion(cudfRowEstimator);
     goalTargetSize = goal.targetSizeBytes();
-    // set adjustedRowSize, adjustedNumRows and dataLength fields based on the initial estimate.
+    // Set adjustedRowSize, adjustedNumRows and dataLength fields based on the initial estimate.
     setActualDataCapacities(rowSizeEstimate);
     rapidsTypes = new DType[schema.length];
     outputTypes = new DataType[schema.length];
@@ -138,6 +138,7 @@ public abstract class InternalRowToColumnarBatchIterator implements Iterator<Col
     // write the data directly into those buffers using code generation in a child of this class.
     // that implements fillBatch.
     boolean fillBatchDone = false;
+    int originalRowSize = adjustedRowSize;
     int retryCount = 0;
     while (!fillBatchDone) { // try until we find the correct size to allocate the dataBuffer
       try (HostMemoryBuffer dataBuffer = HostMemoryBuffer.allocate(dataLength);
@@ -203,8 +204,12 @@ public abstract class InternalRowToColumnarBatchIterator implements Iterator<Col
           //    To avoid outliers, update the estimated row size using median between two values
           //    which will be used for the upcoming calls. This way, finding the minimum dataBuffer
           //    can be found faster until eventually steady state is reached.
+
+          // First, take average window to omit outlier.
           long averageRowSize = dataOffset / currentRow;
-          long currMedian = (averageRowSize + adjustedRowSize) / 2;
+          // Second, get the median between the average window size and the cached size prior to allocating
+          // that batch.
+          long currMedian = (averageRowSize + originalRowSize) / 2;
           // Increase the allocated memory by setting the adjustedRowSize to the median between the
           // current estimate and the latest size that successfully copied the row.
           setActualDataCapacities(currMedian);
@@ -235,7 +240,8 @@ public abstract class InternalRowToColumnarBatchIterator implements Iterator<Col
   }
 
   protected void setActualDataCapacities(final long suggestedRowSize) {
-    int newRowSize = (int) Math.min(suggestedRowSize, JCudfUtil.JCUDF_MAX_ROW_BUFFER_LENGTH);
+    // Make sure that we never fall below the initial row size estimate.
+    int newRowSize = (int) Math.min(Math.max(rowSizeEstimate, suggestedRowSize), JCudfUtil.JCUDF_MAX_ROW_BUFFER_LENGTH);
     adjustedRowSize = JCudfUtil.alignOffset(newRowSize, JCudfUtil.JCUDF_ROW_ALIGNMENT);
     adjustedNumRows = (int) Math.max(1, Math.min(Integer.MAX_VALUE - 1, goalTargetSize / adjustedRowSize));
     dataLength = (long) adjustedRowSize * adjustedNumRows;
