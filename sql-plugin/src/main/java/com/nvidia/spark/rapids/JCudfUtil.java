@@ -197,7 +197,6 @@ public final class JCudfUtil {
    * Checks if CUDF Kernel can apply optimized row conversion on the Spark schema represented by
    * {@link CudfUnsafeRow}. Note that the calculation assumes that the {@code cudfUnsafeRow}
    * is not usable yet (i.e., {@link CudfUnsafeRow#pointTo(long, int)} is not called yet).
-   *
    * The fixed-width optimized cudf kernel only supports up to 1.5 KB per row.
    * For fixed-size rows, we know the exact number of bytes used by the columns and the validity
    * bytes. We can use that value to branch over the size of the output to know which kernel to

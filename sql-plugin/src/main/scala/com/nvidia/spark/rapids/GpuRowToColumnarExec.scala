@@ -725,20 +725,20 @@ object GeneratedInternalRowToCudfRowIterator extends Logging {
 
     // Create helper to calculate the offsets and build the cudfRow by copying spark unsafe row.
     // This needs to match what is in cudf and CudfUnsafeRow
-    val jcudfRowBuilder = JCudfUtil.getRowBuilder(schema)
+    val jCudfRowBuilder = JCudfUtil.getRowBuilder(schema)
 
     val copyData = schema.indices.map { colIndex =>
-      jcudfRowBuilder.generateCopyCodeColumn(
+      jCudfRowBuilder.generateCopyCodeColumn(
         colIndex, s"$rowBaseObj", s"$rowBaseOffset", s"$sparkValidityOffset",
         "startAddress", "endAddress", s"$cudfDataOffsetTmp")
     }
-    val cudfDataOffsetInit = s"$cudfDataOffsetTmp = ${jcudfRowBuilder.getVariableDataOffset};"
+    val cudfDataOffsetInit = s"$cudfDataOffsetTmp = ${jCudfRowBuilder.getVariableDataOffset};"
 
     val sparkValidityTmp = ctx.freshName("unsafeRowTmp")
 
-    val cudfValidityStart = jcudfRowBuilder.getValidityBytesOffset
+    val cudfValidityStart = jCudfRowBuilder.getValidityBytesOffset
 
-    val copyValidity = (0 until jcudfRowBuilder.getValiditySizeInBytes).map { cudfValidityByteIndex =>
+    val copyValidity = (0 until jCudfRowBuilder.getValiditySizeInBytes).map { cudfValidityByteIndex =>
       var ret = ""
       val byteOffsetInSparkLong = cudfValidityByteIndex % 8
       if (byteOffsetInSparkLong == 0) {
@@ -782,11 +782,9 @@ object GeneratedInternalRowToCudfRowIterator extends Logging {
          |  // of a row at a time.
          |  @Override
          |  public int[] fillBatch(ai.rapids.cudf.HostMemoryBuffer dataBuffer,
-         |      ai.rapids.cudf.HostMemoryBuffer offsetsBuffer,
-         |      long dataBufferLength,
-         |      int estimatedRowsCount) {
+         |      ai.rapids.cudf.HostMemoryBuffer offsetsBuffer) {
          |    final long dataBaseAddress = dataBuffer.getAddress();
-         |    final long endDataAddress = dataBaseAddress + dataBufferLength;
+         |    final long endDataAddress = dataBaseAddress + dataLength;
          |
          |    int dataOffset = 0;
          |    int currentRow = 0;
@@ -817,8 +815,7 @@ object GeneratedInternalRowToCudfRowIterator extends Logging {
          |        offsetIndex += 4;
          |        currentRow += 1;
          |        dataOffset += numBytesUsedByRow;
-         |        done = !(currentRow < estimatedRowsCount &&
-         |            (dataBufferLength - dataOffset - rowSizeEstimate >= 0) &&
+         |        done = !((dataLength - dataOffset - rowSizeEstimate >= 0) &&
          |            input.hasNext());
          |      }
          |    }
