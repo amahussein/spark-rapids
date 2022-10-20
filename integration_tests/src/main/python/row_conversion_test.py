@@ -113,7 +113,7 @@ def test_row_conversions_var_width():
             ["i", timestamp_gen], ["j", date_gen], ["k", string_gen], ["l", decimal_gen_64bit],
             ["m", decimal_gen_32bit], ["n", string_gen]]
     assert_gpu_and_cpu_are_equal_collect(
-        lambda spark : gen_df(spark, gens).selectExpr("*", "a as a_again"))
+        lambda spark: gen_df(spark, gens).selectExpr("*", "h as h_again", "k as k_again", "n as n_again"))
 
 def test_row_conversions_var_width_wide():
     gens = [["a{}".format(i), ByteGen(nullable=True)] for i in range(10)] + \
@@ -122,14 +122,13 @@ def test_row_conversions_var_width_wide():
            [["d{}".format(i), LongGen(nullable=True)] for i in range(10)] + \
            [["e{}".format(i), FloatGen(nullable=True)] for i in range(10)] + \
            [["f{}".format(i), DoubleGen(nullable=True)] for i in range(10)] + \
-           [["g{}".format(i), StringGen(nullable=True)] for i in range(5)] + \
+           [["g{}".format(i), StringGen(nullable=True)] for i in range(10)] + \
            [["h{}".format(i), BooleanGen(nullable=True)] for i in range(10)] + \
-           [["i{}".format(i), StringGen(nullable=True)] for i in range(5)] + \
+           [["i{}".format(i), StringGen(nullable=True)] for i in range(10)] + \
            [["j{}".format(i), TimestampGen(nullable=True)] for i in range(10)] + \
-           [["k{}".format(i), DateGen(nullable=True)] for i in range(10)] + \
-           [["l{}".format(i), DecimalGen(precision=12, scale=2, nullable=True)] for i in range(10)] + \
-           [["m{}".format(i), DecimalGen(precision=7, scale=3, nullable=True)] for i in range(10)]
+           [["k{}".format(i), decimal_gen_32bit] for i in range(10)] + \
+           [["l{}".format(i), decimal_gen_64bit] for i in range(10)]
     def do_it(spark):
-        df=gen_df(spark, gens, length=1).selectExpr("*", "a0 as a_again")
+        df = gen_df(spark, gens, length=1).selectExpr("*", "i0 as i_again", "g0 as g_again")
         return df
     assert_gpu_and_cpu_are_equal_collect(do_it)
