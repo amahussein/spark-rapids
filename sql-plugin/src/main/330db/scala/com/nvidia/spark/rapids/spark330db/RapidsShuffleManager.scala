@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.nvidia.spark.rapids.spark321db
+package com.nvidia.spark.rapids.spark330db
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.rapids.shims.spark321db.ProxyRapidsShuffleInternalManager

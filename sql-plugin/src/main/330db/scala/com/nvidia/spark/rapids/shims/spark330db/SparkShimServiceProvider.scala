@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.nvidia.spark.rapids.shims.spark321db
+package com.nvidia.spark.rapids.shims.spark330db
 
 import com.nvidia.spark.rapids.{DatabricksShimVersion, ShimVersion}
 
