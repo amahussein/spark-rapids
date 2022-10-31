@@ -261,6 +261,3 @@ object SparkShimImpl extends Spark330PlusShims with Spark320until340Shims {
     case BroadcastQueryStageExec(_, e: ReusedExchangeExec, _, _) => e
   }
 }
-
-// Fallback to the default definition of `deterministic`
-trait GpuDeterministicFirstLastCollectShim extends Expression
