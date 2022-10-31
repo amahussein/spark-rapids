@@ -842,7 +842,7 @@
                                 <phase>none</phase>  <!--Disable it for all submodules, only sql-plugin needs to enable it -->
                                 <configuration>
                                     <sources>
-                                        <source>${project.basedir}/src/main/321db/scala</source>
+                                        <source>${project.basedir}/src/main/330db/scala</source>
                                         <source>${project.basedir}/src/main/311until330-all/scala</source>
                                         <source>${project.basedir}/src/main/311until340-all/scala</source>
                                         <source>${project.basedir}/src/main/311+-db/scala</source>

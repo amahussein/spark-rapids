@@ -41,7 +41,7 @@ import org.apache.spark.sql.rapids.execution.shims.{GpuSubqueryBroadcastMeta, Re
 import org.apache.spark.sql.rapids.shims.GpuFileScanRDD
 import org.apache.spark.sql.types._
 
-object SparkShimImpl extends Spark321PlusShims with Spark320until340Shims {
+object SparkShimImpl extends Spark330PlusShims with Spark320until340Shims {
 
   override def getSparkShimVersion: ShimVersion = ShimLoader.getShimVersion
 
