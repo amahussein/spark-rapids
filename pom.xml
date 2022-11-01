@@ -419,7 +419,7 @@
                 <hadoop.client.version>3.3.1</hadoop.client.version>
                 <rat.consoleOutput>true</rat.consoleOutput>
                 <parquet.hadoop.version>1.12.0</parquet.hadoop.version>
-                <spark.shim.sources>${spark330.sources}</spark.shim.sources>
+                <spark.shim.sources>${spark330db.sources}</spark.shim.sources>
                 <spark.shim.test.sources>${project.basedir}/src/test/${buildver}/scala</spark.shim.test.sources>
             </properties>
             <modules>
