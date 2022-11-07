@@ -601,6 +601,7 @@
 
                                         <!-- uniquely 340+ -->
                                         <include name="340+/*"/>
+                                        <include name="340+-nondb/*"/>
                                     </patternset>
                                     <include name="340/*"/>
                                 </dirset>
@@ -650,6 +651,16 @@
                                         <include name="311+-db/*"/>
                                     </patternset>
                                     <include name="321db/*"/>
+                                </dirset>
+                            </pathconvert>
+                            <pathconvert property="spark330db.sources" pathsep=",">
+                                <dirset dir="${project.basedir}/src/main">
+                                    <patternset id="spark330db+.pattern">
+                                        <!-- inherit 321+ except nondb -->
+                                        <patternset refid="spark340+.pattern"/>
+                                        <exclude name="*nondb*/*"/>
+                                    </patternset>
+                                    <include name="330db/*"/>
                                 </dirset>
                             </pathconvert>
                         </target>
