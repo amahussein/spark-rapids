@@ -289,6 +289,7 @@ run_mvn_cmd()
     done
 
     # run package command for databricks
+    set +x
     mvn -B -Ddatabricks -Dbuildver=$BUILDVER clean package -DskipTests $MVN_OPT
 }
 
