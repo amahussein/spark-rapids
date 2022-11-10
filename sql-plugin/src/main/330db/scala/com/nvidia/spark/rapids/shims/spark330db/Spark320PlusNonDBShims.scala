@@ -16,18 +16,6 @@
 package com.nvidia.spark.rapids.shims
 
 import com.nvidia.spark.rapids.SparkShims
-import org.apache.hadoop.fs.FileStatus
-import org.apache.spark.{SparkEnv, TaskContext}
-
-import org.apache.spark.memory.TaskMemoryManager
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.NamedExpression
-import org.apache.spark.sql.catalyst.plans.physical.BroadcastMode
-import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.datasources.PartitioningAwareFileIndex
-import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
-import org.apache.spark.sql.execution.python.WindowInPandasExec
 
 /**
  * Shim methods that can be compiled with every supported 3.2.0+ except Databricks versions
