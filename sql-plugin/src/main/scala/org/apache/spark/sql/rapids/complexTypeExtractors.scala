@@ -26,7 +26,6 @@ import com.nvidia.spark.rapids.shims.ShimUnaryExpression
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.TypeCheckResult
 import org.apache.spark.sql.catalyst.expressions.{ExpectsInputTypes, Expression, ExtractValue, GetArrayStructFields, ImplicitCastInputTypes, NullIntolerant}
-import org.apache.spark.sql.catalyst.trees.TreePattern._
 import org.apache.spark.sql.catalyst.util.{quoteIdentifier, TypeUtils}
 import org.apache.spark.sql.rapids.shims.RapidsErrorUtils
 import org.apache.spark.sql.types.{AbstractDataType, AnyDataType, ArrayType, BooleanType, DataType, IntegralType, MapType, StructField, StructType}
@@ -44,8 +43,6 @@ case class GpuGetStructField(child: Expression, ordinal: Int, name: Option[Strin
     val fieldName = if (resolved) childSchema(ordinal).name else s"_$ordinal"
     s"$child.${name.getOrElse(fieldName)}"
   }
-
-  override def nodePatternsInternal(): Seq[TreePattern] = Seq()
 
   override def sql: String =
     child.sql + s".${quoteIdentifier(name.getOrElse(childSchema(ordinal).name))}"
@@ -98,8 +95,6 @@ case class GpuGetArrayItem(child: Expression, ordinal: Expression, failOnError: 
   override def dataType: DataType = child.dataType.asInstanceOf[ArrayType].elementType
 
   override def hasSideEffects: Boolean = super.hasSideEffects || failOnError
-
-  override def nodePatternsInternal(): Seq[TreePattern] = Seq()
 
   override def doColumnar(lhs: GpuColumnVector, rhs: GpuColumnVector): ColumnVector = {
     val (array, indices) = (lhs.getBase, rhs.getBase)
@@ -264,17 +259,17 @@ case class GpuArrayContains(left: Expression, right: Expression)
 
   /**
    * Helper function to account for `libcudf`'s `listContains()` semantics.
-   * 
-   * If a list row contains at least one null element, and is found not to contain 
-   * the search key, `libcudf` returns false instead of null.  SparkSQL expects to 
+   *
+   * If a list row contains at least one null element, and is found not to contain
+   * the search key, `libcudf` returns false instead of null.  SparkSQL expects to
    * return null in those cases.
-   * 
-   * This method determines the result's validity mask by ORing the output of 
+   *
+   * This method determines the result's validity mask by ORing the output of
    * `listContains()` with the NOT of `listContainsNulls()`.
-   * A result row is thus valid if either the search key is found in the list, 
+   * A result row is thus valid if either the search key is found in the list,
    * or if the list does not contain any null elements.
    */
-  private def orNotContainsNull(containsResult: ColumnVector, 
+  private def orNotContainsNull(containsResult: ColumnVector,
                                 inputListsColumn:ColumnVector): ColumnVector = {
     val notContainsNull = withResource(inputListsColumn.listContainsNulls) {
       _.not
@@ -302,7 +297,7 @@ case class GpuArrayContains(left: Expression, right: Expression)
 
   override def doColumnar(lhs: GpuColumnVector, rhs: GpuColumnVector): ColumnVector = {
     val inputListsColumn = lhs.getBase
-    withResource(inputListsColumn.listContainsColumn(rhs.getBase)) { 
+    withResource(inputListsColumn.listContainsColumn(rhs.getBase)) {
       orNotContainsNull(_, inputListsColumn)
     }
   }
@@ -337,8 +332,6 @@ case class GpuGetArrayStructFields(
   override def dataType: DataType = ArrayType(field.dataType, containsNull)
   override def toString: String = s"$child.${field.name}"
   override def sql: String = s"${child.sql}.${quoteIdentifier(field.name)}"
-  
-  override def nodePatternsInternal(): Seq[TreePattern] = Seq()
 
   override protected def doColumnar(input: GpuColumnVector): ColumnVector = {
     val base = input.getBase
