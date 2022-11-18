@@ -17,6 +17,8 @@
 
 set -ex
 
+# Map of software versions for each dependency.
+declare -A sw_versions
 LOCAL_JAR_PATH=${LOCAL_JAR_PATH:-''}
 SPARK_CONF=${SPARK_CONF:-''}
 BASE_SPARK_VERSION=${BASE_SPARK_VERSION:-$(< /databricks/spark/VERSION)}
@@ -34,13 +36,41 @@ fi
 sudo "$(which pip)" install pytest sre_yield requests pandas pyarrow findspark pytest-xdist pytest-order
 
 export SPARK_HOME=/databricks/spark
-# change to not point at databricks confs so we don't conflict with their settings
+# Change to not point at databricks confs so we don't conflict with their settings
 export SPARK_CONF_DIR=$PWD
-export PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/pyspark/:$SPARK_HOME/python/lib/py4j-0.10.9-src.zip
-if [[ $BASE_SPARK_VERSION == "3.2.1" ]]
+
+# Get Python version from environment after lowercase and remove minor.
+# Something like python3.8 for DB10.4 and python3.9 for DB11.3
+sw_versions[PTHON]=$(python --version | sed 's/[A-Z]/\L&/g;s/ //g' | cut -d . -f 1,2)
+# set Iceberg related versions. See https://iceberg.apache.org/multi-engine-support/#apache-spark
+# Spark 3.3 | Initial Iceberg Version 0.14.0 | Latest Support 1.0.0
+# Spark 3.2 | Initial Iceberg Version 0.13.0 | Latest Support 1.0.0
+# Spark 3.1 | Initial Iceberg Version 0.12.0 | Latest Support 1.0.0
+case "$BASE_SPARK_VERSION" in
+    "3.3.0")
+        sw_versions[ICEBERG]=${ICEBERG_VERSION:-'0.14.1'}
+        ;;
+    "3.2.1")
+        sw_versions[ICEBERG]=${ICEBERG_VERSION:-'0.13.2'}
+        ;;
+    "3.1.2")
+        sw_versions[ICEBERG]=${ICEBERG_VERSION:-'0.13.2'}
+        ;;
+    *) echo "Unexpected Spark version: $BASE_SPARK_VERSION"; exit 1;;
+esac
+# set the iceberg_spark to something like 3.3 for DB11.3, 3.2 for DB10.4
+sw_versions[ICEBERG_SPARK]=$(echo $BASE_SPARK_VERSION | cut -d. -f1,2)
+
+# Get the correct py4j file.
+PY4J_FILE=$(find $SPARK_HOME/python/lib -type f -iname "py4j*.zip")
+
+export PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/pyspark/:$PY4J_FILE
+
+if [[ $BASE_SPARK_VERSION == "3.2.1" ]] || [[ $BASE_SPARK_VERSION == "3.3.0" ]]
 then
   # Databricks Koalas can conflict with the actual Pandas version, so put site packages first
-  export PYTHONPATH=/databricks/python3/lib/python3.8/site-packages:$PYTHONPATH
+  # get the python directory from the system
+  export PYTHONPATH=/databricks/python3/lib/${sw_versions[PTHON]}/site-packages:$PYTHONPATH
 fi
 sudo ln -s /databricks/jars/ $SPARK_HOME/jars || true
 sudo chmod 777 /databricks/data/logs/
@@ -80,12 +110,10 @@ TEST_MODE=${TEST_MODE:-'DEFAULT'}
 TEST_TYPE="nightly"
 PCBS_CONF="com.nvidia.spark.ParquetCachedBatchSerializer"
 
-ICEBERG_VERSION=${ICEBERG_VERSION:-0.13.2}
-ICEBERG_SPARK_VER=$(echo $BASE_SPARK_VERSION | cut -d. -f1,2)
 # Classloader config is here to work around classloader issues with
 # --packages in distributed setups, should be fixed by
 # https://github.com/NVIDIA/spark-rapids/pull/5646
-ICEBERG_CONFS="--packages org.apache.iceberg:iceberg-spark-runtime-${ICEBERG_SPARK_VER}_2.12:${ICEBERG_VERSION} \
+ICEBERG_CONFS="--packages org.apache.iceberg:iceberg-spark-runtime-${sw_versions[ICEBERG_SPARK]}_2.12:${sw_versions[ICEBERG]} \
  --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
  --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog \
  --conf spark.sql.catalog.spark_catalog.type=hadoop \
