@@ -18,12 +18,14 @@ package com.nvidia.spark.rapids.shims
 
 import com.nvidia.spark.rapids._
 import org.apache.spark.rapids.shims.GpuShuffleExchangeExec
+import org.apache.spark.sql.catalyst.expressions.CheckOverflowInTableInsert
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.plans.physical.SinglePartition
 import org.apache.spark.sql.execution.exchange.ENSURE_REQUIREMENTS
 import org.apache.spark.sql.execution.{CollectLimitExec, GlobalLimitExec, SparkPlan}
+import org.apache.spark.sql.rapids.GpuCheckOverflowInTableInsert
 
-object SparkShimImpl extends Spark331PlusShims with Spark321PlusDBShims {
+object SparkShimImpl extends Spark321PlusDBShims {
   override def getSparkShimVersion: ShimVersion = ShimLoader.getShimVersion
 
   private val shimExecs: Map[Class[_ <: SparkPlan], ExecRule[_ <: SparkPlan]] = Seq(
@@ -62,5 +64,27 @@ object SparkShimImpl extends Spark331PlusShims with Spark321PlusDBShims {
 
   // AnsiCast is removed from Spark3.4.0
   override def ansiCastRule: ExprRule[_ <: Expression] = null
+
+  override def getExprs: Map[Class[_ <: Expression], ExprRule[_ <: Expression]] = {
+    val map: Map[Class[_ <: Expression], ExprRule[_ <: Expression]] = Seq(
+      // Add expression CheckOverflowInTableInsert starting Spark-3.3.1+
+      // Accepts all types as input as the child Cast does the type checking and the calculations.
+      GpuOverrides.expr[CheckOverflowInTableInsert](
+        "Casting a numeric value as another numeric type in store assignment",
+        ExprChecks.unaryProjectInputMatchesOutput(
+          TypeSig.all,
+          TypeSig.all),
+        (t, conf, p, r) => new UnaryExprMeta[CheckOverflowInTableInsert](t, conf, p, r) {
+          override def convertToGpu(child: Expression): GpuExpression = {
+            child match {
+              case c: GpuCast => GpuCheckOverflowInTableInsert(c, t.columnName)
+              case _ =>
+                throw new IllegalStateException("Expression child is not of Type GpuCast")
+            }
+          }
+        })
+    ).map(r => (r.getClassFor.asSubclass(classOf[Expression]), r)).toMap
+    super.getExprs ++ map
+  }
 
 }

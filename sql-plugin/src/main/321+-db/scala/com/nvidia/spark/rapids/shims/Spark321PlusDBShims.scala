@@ -82,7 +82,7 @@ trait Spark321PlusDBShims extends SparkShims {
   override def filesFromFileIndex(fileCatalog: PartitioningAwareFileIndex): Seq[FileStatus] = {
     fileCatalog.allFiles().map(_.toFileStatus)
   }
-  
+
    override def reusedExchangeExecPfn: PartialFunction[SparkPlan, ReusedExchangeExec] = {
     case ShuffleQueryStageExec(_, e: ReusedExchangeExec, _, _) => e
     case BroadcastQueryStageExec(_, e: ReusedExchangeExec, _, _) => e
