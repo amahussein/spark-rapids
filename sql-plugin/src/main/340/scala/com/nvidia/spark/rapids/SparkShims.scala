@@ -24,7 +24,8 @@ import org.apache.spark.sql.catalyst.plans.physical.SinglePartition
 import org.apache.spark.sql.execution.{CollectLimitExec, GlobalLimitExec, SparkPlan}
 import org.apache.spark.sql.execution.exchange.ENSURE_REQUIREMENTS
 
-object SparkShimImpl extends Spark331PlusShims {
+object SparkShimImpl extends Spark331PlusShims
+  with Spark330PlusNonDBShims {
   override def getSparkShimVersion: ShimVersion = ShimLoader.getShimVersion
 
   private val shimExecs: Map[Class[_ <: SparkPlan], ExecRule[_ <: SparkPlan]] = Seq(
