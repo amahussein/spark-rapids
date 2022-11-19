@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.rapids.shims
 
-import org.apache.spark.SparkDateTimeException
+import org.apache.spark.{QueryContext, SparkDateTimeException}
 
 object SparkDateTimeExceptionShims {
 
