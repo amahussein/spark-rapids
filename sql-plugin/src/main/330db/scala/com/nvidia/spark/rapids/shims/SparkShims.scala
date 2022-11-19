@@ -25,7 +25,8 @@ import org.apache.spark.sql.execution.exchange.ENSURE_REQUIREMENTS
 import org.apache.spark.sql.execution.{CollectLimitExec, GlobalLimitExec, SparkPlan}
 import org.apache.spark.sql.rapids.GpuCheckOverflowInTableInsert
 
-object SparkShimImpl extends Spark321PlusDBShims {
+object SparkShimImpl extends Spark321PlusDBShims
+  with Spark320until340Shims {
   override def getSparkShimVersion: ShimVersion = ShimLoader.getShimVersion
 
   private val shimExecs: Map[Class[_ <: SparkPlan], ExecRule[_ <: SparkPlan]] = Seq(
