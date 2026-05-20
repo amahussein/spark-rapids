@@ -160,7 +160,7 @@ case class GpuGenerateBloomFilterExec(
     // skipped in its accumulator without kicking off a GPU build.
     val effMaxBytes = GpuGenerateBloomFilterExec.resolveEffectiveMaxFilterBytes()
     val oversizedBfIds: Set[String] = specsCapture.flatMap { spec =>
-      val bfBytes = (spec.numBits + 7L) / 8L
+      val bfBytes = GpuGenerateBloomFilterExec.bytesForBits(spec.numBits)
       if (bfBytes > effMaxBytes) {
         logWarning(s"[CuBF-GpuGenerate] OVERSHOOT bfId=${spec.bfId} " +
           s"bfBytes=$bfBytes > max=$effMaxBytes -> SKIP")
@@ -329,7 +329,14 @@ object GpuGenerateBloomFilterExec extends Logging {
    */
   private val V1IndexingCeilingBytes: Long = (1L << 31) / 8L
 
-   /**
+  /**
+   * Convert BF bits to bytes without overflowing: realistic values follow the normal
+   * ceil-divide path, while pathological values saturate so the overshoot guard fails closed.
+   */
+  private def bytesForBits(numBits: Long): Long =
+    if (numBits > Long.MaxValue - 7L) Long.MaxValue else (numBits + 7L) / 8L
+
+  /**
    * Driver-side lookup of `SparkVersionBFCaps.effectiveMaxFilterBytes(Long)`.
    *
    * Optional capability helper supplied by the planner module. Resolved
