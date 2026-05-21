@@ -69,7 +69,7 @@ object BloomFilterShims extends Logging {
   private val TryReadBFRegistryExecClassName =
     "com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec"
 
-  lazy val exprs: Map[Class[_ <: Expression], ExprRule[_ <: Expression]] = {
+  val exprs: Map[Class[_ <: Expression], ExprRule[_ <: Expression]] = {
     Seq(
       GpuOverrides.expr[BloomFilterMightContain](
         "Bloom filter query",
