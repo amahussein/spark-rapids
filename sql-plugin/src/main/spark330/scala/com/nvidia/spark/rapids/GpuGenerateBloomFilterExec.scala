@@ -149,8 +149,27 @@ case class GpuGenerateBloomFilterExec(
         }
       }
 
-      // Close BFs if the task stops before this iterator is exhausted.
-      ctx.addTaskCompletionListener[Unit] { _ => closeAllBfs() }
+      ctx.addTaskCompletionListener[Unit] { _ =>
+        // Iterator was not drained to exhaustion, so `finalizeAllBFs` never ran for this
+        // partition. Without an explicit signal the merged accumulator would silently miss
+        // the unconsumed keys, and the BF would produce false negatives against the join.
+        // Emit the skip sentinel so the merged BF fails closed instead. Failed / killed /
+        // speculation-loser results are dropped before the driver merges them — failed tasks
+        // are filtered by `countFailedValues = false`, and speculation losers' results are
+        // discarded by the driver-side dedup against the winning attempt — so this emit is
+        // local-only on those paths and only reaches the driver when the partition's result
+        // is actually accepted.
+        if (!finalized) {
+          var i = 0
+          while (i < numSpecs) {
+            if (!skipSpec(i)) {
+              accMap(specsCapture(i).bfId).add(BloomFilterBuildAccumulator.SkipSentinel)
+            }
+            i += 1
+          }
+        }
+        closeAllBfs()
+      }
 
       new Iterator[ColumnarBatch] {
         override def hasNext: Boolean = {

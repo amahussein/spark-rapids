@@ -41,6 +41,8 @@
 spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids
 
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
+
 import com.nvidia.spark.rapids.BloomFilterTestHelpers._
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.funsuite.AnyFunSuite
@@ -344,6 +346,60 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     val plan = spark.range(10).queryExecution.executedPlan
     assert(InlineBFBuildReplacement.applyIfNeeded(plan) eq plan,
       "applyIfNeeded must return the original plan reference unchanged")
+  }
+
+  Seq(1, 2).foreach { version =>
+    test(s"driver-side merge of one real and one sentinel partition yields sentinel [v$version]") {
+      // Each partition ships its own accumulator copy back to the driver. If one partition
+      // emits the skip sentinel because it closed early, the driver-side merge must promote
+      // the merged value to the sentinel so a probe filter built from a strict subset of
+      // build keys cannot silently drop matching probe rows.
+      val real = new BloomFilterBuildAccumulator()
+      real.add(makeBfBytes(version = version, dataLastByte = 0x42))
+      val poisoned = new BloomFilterBuildAccumulator()
+      poisoned.add(BloomFilterBuildAccumulator.SkipSentinel)
+      val driver = new BloomFilterBuildAccumulator()
+      driver.merge(real)
+      driver.merge(poisoned)
+      assert(driver.value eq BloomFilterBuildAccumulator.SkipSentinel,
+        "a single sentinel-emitting partition must invalidate the merged BF")
+      // Reverse the merge order to pin the contract regardless of arrival order.
+      val driverReverse = new BloomFilterBuildAccumulator()
+      driverReverse.merge(poisoned)
+      driverReverse.merge(real)
+      assert(driverReverse.value eq BloomFilterBuildAccumulator.SkipSentinel,
+        "merge order must not change the sentinel-wins outcome")
+    }
+  }
+
+  test("sentinel survives executor-side serialization round-trip") {
+    // BloomFilterBuildAccumulator's writeReplace branches on `atDriverSide`. The driver
+    // branch serializes a zeroed copyAndReset(), so a naive driver-local round-trip would
+    // never exercise the executor-to-driver path that ships the build result. Force the
+    // executor-side branch by registering on the driver and doing an initial round-trip
+    // that flips `atDriverSide` to false via AccumulatorV2.readObject's flip logic, then
+    // mutate the deserialized copy and ship it back the way Spark would.
+    val sc = spark.sparkContext
+    val driverAcc = new BloomFilterBuildAccumulator()
+    sc.register(driverAcc, "cubf-roundtrip-test")
+    val executorAcc = javaRoundTrip(driverAcc)
+    executorAcc.add(BloomFilterBuildAccumulator.SkipSentinel)
+    val driverCopy = javaRoundTrip(executorAcc)
+    val merged = new BloomFilterBuildAccumulator()
+    merged.merge(driverCopy)
+    // Use the public poison-wins contract to detect the sentinel without relying on the
+    // private isSkipShape predicate: a subsequent add of any real BF must not unseat it.
+    merged.add(makeBfBytes(version = 1, dataLastByte = 0x42))
+    assert(merged.value eq BloomFilterBuildAccumulator.SkipSentinel,
+      "an executor-emitted sentinel must survive Java serialization and merge")
+  }
+
+  private def javaRoundTrip[A <: AnyRef](obj: A): A = {
+    val bos = new ByteArrayOutputStream()
+    val oos = new ObjectOutputStream(bos)
+    try oos.writeObject(obj) finally oos.close()
+    val ois = new ObjectInputStream(new ByteArrayInputStream(bos.toByteArray))
+    try ois.readObject().asInstanceOf[A] finally ois.close()
   }
 
   test("buildCostUpdaters do not break canonical transparency") {

@@ -78,6 +78,57 @@ class GpuGenerateBloomFilterAccumulatorSuite extends SparkQueryCompareTestSuite 
       "accumulator bytes must match an independently built reference bloom filter")
   }
 
+  test("partial drain through executeColumnar publishes the skip sentinel") {
+    // Round-trip the early-close path through Spark's real task lifecycle: the second
+    // batch's keys are unreachable when each partition takes only the first batch, so the
+    // operator's completion listener must emit the sentinel and Spark must merge it into
+    // the driver-side accumulator value.
+    val numRows = 1024
+    val numHashes = 5
+    val numBits = 1L << 14
+    val xxHashSeed = 42L
+    val bfVersion = 1
+    val bfSeed = 0
+    val bfId = "cubf-accum-partial-drain"
+
+    val accValue = withGpuSparkSession { _ =>
+      // targetSizeBytes / 8 = max rows per batch; pick a size that forces ≥ 2 batches with
+      // the second batch carrying keys absent from the first.
+      val rangeExec = GpuRangeExec(
+        start = 0L, end = numRows.toLong, step = 1L, numSlices = 1,
+        output = Seq(AttributeReference("id", LongType)()),
+        targetSizeBytes = (numRows / 4) * 8L)
+      val exec = GpuGenerateBloomFilterExec(
+        specs = Seq(BFSpec(bfId, keyColumnIndex = 0,
+          numHashes = numHashes, numBits = numBits)),
+        bfVersion = bfVersion, seed = bfSeed, xxHashSeed = xxHashSeed,
+        child = rangeExec)
+      val collected = exec.executeColumnar().mapPartitions { iter =>
+        iter.take(1).map { b =>
+          val n = b.numRows()
+          b.close()
+          n
+        }
+      }.collect()
+      // Two assertions pin the partial-drain *shape*: at least one batch emerged, and
+      // strictly fewer rows than the partition contained — otherwise the fixture
+      // collapsed to a single full batch and the test would pass even if the listener
+      // never emitted the sentinel.
+      assert(collected.nonEmpty,
+        "partition must emit at least one batch before being abandoned")
+      assert(collected.sum < numRows,
+        s"partial-drain fixture degenerated to a full drain: ${collected.sum} of $numRows " +
+          s"rows reached the consumer, so the abandoned-second-batch scenario was never " +
+          s"exercised. Adjust targetSizeBytes so the partition produces multiple batches.")
+      exec.accumulators(bfId).value
+    }
+
+    assert(accValue eq BloomFilterBuildAccumulator.SkipSentinel,
+      "partial-drain partition must publish the skip sentinel into the driver-side " +
+        s"accumulator after Spark merges the executor result; got " +
+        s"${if (accValue == null) "null" else accValue.toSeq}")
+  }
+
   /** Builds the same bloom filter the operator would by feeding the keys through cuDF JNI. */
   private def referenceBfBytes(
       numRows: Int, numHashes: Int, numBits: Long, bfVersion: Int, bfSeed: Int,
