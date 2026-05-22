@@ -208,6 +208,10 @@ case class GpuGenerateBloomFilterExec(
                 val bf = bfs(i)
                 if (bf != null) {
                   val bytes = GpuGenerateBloomFilterExec.scalarToHostBytes(bf)
+                  // `bytes` is a fresh JVM byte array unrelated to any device buffer, and the
+                  // accumulator copies the payload into its own heap state (cloning on first
+                  // write or OR-merging into an existing buffer). Once `add` returns, releasing
+                  // the source `Scalar` in `closeAllBfs()` below cannot disturb the result.
                   accMap(spec.bfId).add(bytes)
                   logInfo(s"[CuBF-GpuBuild] bfId=${spec.bfId} " +
                     s"partition=$partId SENT ${bytes.length} bytes " +
@@ -311,6 +315,10 @@ object InlineBFBuildGpuOverride {
  *
  * A 4-byte all-zero value is the skip sentinel; once seen, the accumulator stays skipped.
  * Real bloom filters cannot collide because their serialized header starts with a non-zero version.
+ *
+ * Threading: a given instance is mutated by a single executor thread per task (Spark hands each
+ * task a freshly deserialized copy), and driver-side merges of those copies are serialized by
+ * Spark's accumulator-result handling, so `add`/`merge` do not need internal synchronization.
  */
 class BloomFilterBuildAccumulator extends AccumulatorV2[Array[Byte], Array[Byte]]
     with Logging {

@@ -212,6 +212,48 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     }
   }
 
+  Seq(1, 2).foreach { version =>
+    test(s"accumulator add does not alias the caller's byte array [v$version]") {
+      // The accumulator's value must be independent of the caller's array after add returns,
+      // otherwise a later mutation of the source buffer (e.g. release of the underlying GPU
+      // payload) could silently corrupt the accumulated bloom filter.
+      val bytes = makeBfBytes(version = version, dataLastByte = 0xAB)
+      val expected = bytes.clone()
+      val acc = new BloomFilterBuildAccumulator()
+      acc.add(bytes)
+      java.util.Arrays.fill(bytes, 0.toByte)
+      assert(java.util.Arrays.equals(acc.value, expected),
+        "accumulator value must not alias the caller-provided bytes")
+      assert(acc.value ne BloomFilterBuildAccumulator.SkipSentinel,
+        "post-mutation value must not collapse to the sentinel identity")
+    }
+  }
+
+  test("long-pair accumulator merge sums both pair components without aliasing the source") {
+    // Each task ships its own long-pair accumulator back to the driver, where Spark folds them
+    // into the driver-side aggregate via `merge`. The contract is that both pair components add
+    // and that the source instance is not observed to change after a merge into a sibling.
+    val driverBuild = new BloomFilterBuildCostAccumulator
+    val partitionBuild = new BloomFilterBuildCostAccumulator
+    driverBuild.update(buildWallNanos = 7L, bfBytes = 11L)
+    partitionBuild.update(buildWallNanos = 13L, bfBytes = 17L)
+    driverBuild.merge(partitionBuild)
+    assert(driverBuild.value == ((20L, 28L)),
+      s"merge must sum both components, got ${driverBuild.value}")
+    assert(partitionBuild.value == ((13L, 17L)),
+      s"merge must not mutate the source accumulator, got ${partitionBuild.value}")
+
+    val driverProbe = new BloomFilterProbeAccumulator
+    val partitionProbe = new BloomFilterProbeAccumulator
+    driverProbe.update(rowsIn = 100L, rowsPassed = 80L)
+    partitionProbe.update(rowsIn = 25L, rowsPassed = 20L)
+    driverProbe.merge(partitionProbe)
+    assert(driverProbe.value == ((125L, 100L)),
+      s"merge must sum both components, got ${driverProbe.value}")
+    assert(partitionProbe.value == ((25L, 20L)),
+      s"merge must not mutate the source accumulator, got ${partitionProbe.value}")
+  }
+
   test("resolveEffectiveMaxFilterBytes is fail-safe on missing capability helper") {
     val cap = GpuGenerateBloomFilterExec.resolveEffectiveMaxFilterBytes()
     val v1Ceiling = (1L << 31) / 8L
