@@ -302,7 +302,7 @@ object InlineBFBuildGpuOverride {
           override def convertToGpu(): GpuExec =
             exec.copy(child = childPlans.head.convertIfNeeded())
         }
-    )
+    ).invisible()
   ).map(r => (r.getClassFor.asSubclass(classOf[SparkPlan]), r)).toMap
 }
 
