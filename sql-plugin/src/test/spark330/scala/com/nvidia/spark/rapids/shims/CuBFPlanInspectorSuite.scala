@@ -48,7 +48,7 @@ package com.nvidia.spark.rapids.optimizer.cubloomfilter {
   import org.apache.spark.sql.catalyst.expressions.Attribute
   import org.apache.spark.sql.execution.LeafExecNode
 
-  /** Test-only stub for `BloomFilterShims.TryReadBFRegistryExecClassName`. */
+  /** Test-only stub for the optional planner class discovered by fully qualified class name. */
   case class TryReadBFRegistryExec(bfId: String) extends LeafExecNode {
     override def output: Seq[Attribute] = Seq.empty
     override protected def doExecute(): RDD[InternalRow] =
@@ -67,7 +67,7 @@ package com.nvidia.spark.rapids.shims {
   import com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec
 
   /** Regression coverage for AQE-aware `findBfIdInPlan`. */
-  class BloomFilterShimsSuite extends AnyFunSuite {
+  class CuBFPlanInspectorSuite extends AnyFunSuite {
 
     private case class FakeAdaptiveSparkPlanExec(inner: SparkPlan)
         extends LeafExecNode {
@@ -101,14 +101,14 @@ package com.nvidia.spark.rapids.shims {
 
     test("tryAqePlanFields: returns Seq.empty for non-AQE plans") {
       val plain = PlainLeafExec()
-      assert(BloomFilterShims.tryAqePlanFields(plain).isEmpty,
+      assert(CuBFPlanInspector.tryAqePlanFields(plain).isEmpty,
         "non-AQE plan must not trigger reflective field probing")
     }
 
     test("tryAqePlanFields: returns inner plan for AQE-named class with executedPlan") {
       val inner = PlainLeafExec()
       val aqe = FakeAdaptiveSparkPlanExec(inner)
-      val extracted = BloomFilterShims.tryAqePlanFields(aqe)
+      val extracted = CuBFPlanInspector.tryAqePlanFields(aqe)
       assert(extracted.nonEmpty,
         "AQE-named plan with executedPlan must surface its inner plan")
       assert(extracted.head eq inner,
@@ -118,7 +118,7 @@ package com.nvidia.spark.rapids.shims {
     test("tryAqePlanFields: probes all 4 accessor names in priority order") {
       val inner = PlainLeafExec()
       val aqe = FakeAdaptiveSparkPlanExecAlt(inner)
-      val extracted = BloomFilterShims.tryAqePlanFields(aqe)
+      val extracted = CuBFPlanInspector.tryAqePlanFields(aqe)
       assert(extracted.nonEmpty,
         "fallback to currentPhysicalPlan must work when executedPlan is absent")
       assert(extracted.contains(inner),
@@ -128,7 +128,7 @@ package com.nvidia.spark.rapids.shims {
     test("findBfIdInPlan: AQE-wrapped subquery regression case") {
       val tryRead = TryReadBFRegistryExec(bfId = "cubf-aqe-regression-test")
       val aqeWrapped = FakeAdaptiveSparkPlanExec(tryRead)
-      val result = BloomFilterShims.findBfIdInPlan(aqeWrapped)
+      val result = CuBFPlanInspector.findBfIdInPlan(aqeWrapped)
       assert(result === Some("cubf-aqe-regression-test"),
         "bfId must be discoverable through AQE wrapping")
     }
@@ -136,7 +136,7 @@ package com.nvidia.spark.rapids.shims {
     test("findBfIdInPlan: non-AQE direct child path still works") {
       val tryRead = TryReadBFRegistryExec(bfId = "cubf-non-aqe-path")
       val wrapped = WrapExec(tryRead)
-      val result = BloomFilterShims.findBfIdInPlan(wrapped)
+      val result = CuBFPlanInspector.findBfIdInPlan(wrapped)
       assert(result === Some("cubf-non-aqe-path"),
         "non-AQE path must remain working; the AQE helper must not " +
           "break the standard children traversal")
@@ -144,13 +144,13 @@ package com.nvidia.spark.rapids.shims {
 
     test("findBfIdInPlan: leaf TryReadBFRegistryExec at root") {
       val tryRead = TryReadBFRegistryExec(bfId = "cubf-root")
-      assert(BloomFilterShims.findBfIdInPlan(tryRead) === Some("cubf-root"))
+      assert(CuBFPlanInspector.findBfIdInPlan(tryRead) === Some("cubf-root"))
     }
 
     test("findBfIdInPlan: returns None when no TryReadBFRegistryExec is reachable") {
       val plain = PlainLeafExec()
       val aqeWrapped = FakeAdaptiveSparkPlanExec(plain)
-      assert(BloomFilterShims.findBfIdInPlan(aqeWrapped).isEmpty,
+      assert(CuBFPlanInspector.findBfIdInPlan(aqeWrapped).isEmpty,
         "absence of TryReadBFRegistryExec must yield None, not throw")
     }
   }

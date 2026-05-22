@@ -46,8 +46,6 @@
 spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids.shims
 
-import scala.util.control.NonFatal
-
 import com.nvidia.spark.rapids._
 import com.nvidia.spark.rapids.jni.BloomFilter
 
@@ -55,17 +53,12 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
-import org.apache.spark.sql.execution.{BaseSubqueryExec, ExecSubqueryExpression, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.rapids.aggregate.{CpuToGpuAggregateBufferConverter,
   CpuToGpuBloomFilterBufferConverter, GpuBloomFilterAggregate,
   GpuToCpuAggregateBufferConverter, GpuToCpuBloomFilterBufferConverter}
 
 object BloomFilterShims extends Logging {
-
-  // Optional planner leaf that carries the bfId for metrics wiring.
-  private val TryReadBFRegistryExecClassName =
-    "com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec"
 
   val exprs: Map[Class[_ <: Expression], ExprRule[_ <: Expression]] = {
     Seq(
@@ -133,75 +126,12 @@ object BloomFilterShims extends Logging {
     if (!CuBFFeedbackFlags.isEnabled(SQLConf.get)) {
       (None, None)
     } else {
-      val bfIdOpt = extractBfId(bloomFilterExpression)
+      val bfIdOpt = CuBFPlanInspector.extractBfId(bloomFilterExpression)
       val updaterOpt = for {
         bfId <- bfIdOpt
         spark <- SparkSession.getActiveSession
       } yield BloomFilterProbeAccumulator.driverGetOrCreate(spark.sparkContext, bfId)
       (bfIdOpt, updaterOpt)
-    }
-  }
-
-  private def extractBfId(expr: Expression): Option[String] = {
-    var found: Option[String] = None
-    expr.foreach {
-      case e: ExecSubqueryExpression if found.isEmpty =>
-        found = findBfIdInPlan(e.plan)
-      case _ =>
-    }
-    found
-  }
-
-  private[shims] def findBfIdInPlan(plan: SparkPlan): Option[String] = {
-    // Each BloomFilterMightContain scalar subquery has at most one planner BF registry read.
-    var found: Option[String] = None
-    def visit(p: SparkPlan): Unit = {
-      if (found.isEmpty && p != null) {
-        if (p.getClass.getName == TryReadBFRegistryExecClassName) {
-          found = readBfId(p)
-        }
-        if (found.isEmpty) {
-          p match {
-            case s: BaseSubqueryExec => visit(s.child)
-            case _ =>
-          }
-        }
-        if (found.isEmpty) {
-          tryAqePlanFields(p).foreach(visit)
-        }
-        if (found.isEmpty) {
-          p.children.foreach(visit)
-        }
-      }
-    }
-    visit(plan)
-    found
-  }
-
-  private def readBfId(plan: SparkPlan): Option[String] = {
-    try {
-      Option(plan.getClass.getMethod("bfId").invoke(plan).asInstanceOf[String])
-        .filter(_.nonEmpty)
-    } catch {
-      case NonFatal(_) => None
-    }
-  }
-
-  private val AqePlanFields: Seq[String] =
-    Seq("executedPlan", "currentPhysicalPlan", "initialPlan", "inputPlan")
-
-  private[shims] def tryAqePlanFields(p: SparkPlan): Seq[SparkPlan] = {
-    if (!p.getClass.getName.contains("AdaptiveSparkPlanExec")) {
-      Seq.empty
-    } else {
-      AqePlanFields.flatMap { name =>
-        try {
-          val m = p.getClass.getMethod(name)
-          Option(m.invoke(p).asInstanceOf[SparkPlan])
-        } catch {
-          case NonFatal(_) => None
-        }
-      }
     }
   }
 }
