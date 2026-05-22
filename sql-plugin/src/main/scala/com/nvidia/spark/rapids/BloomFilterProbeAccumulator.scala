@@ -20,13 +20,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 import org.apache.spark.SparkContext
 
-/**
- * Driver-side aggregator of probe-side `(rowsIn, rowsPassed)` per bfId.
- *
- * Implements `BloomFilterPredicateUpdater` so call sites in `GpuBloomFilterMightContain`'s
- * `columnarEval` can hold a trait-typed reference and a counting spy can substitute for it under
- * unit test. `update` fires once per columnar batch, never per row.
- */
+/** Driver-side probe accumulator keyed by bfId. */
 class BloomFilterProbeAccumulator
     extends BloomFilterLongPairAccumulator
     with BloomFilterPredicateUpdater {
@@ -40,11 +34,7 @@ object BloomFilterProbeAccumulator {
 
   private val cache = new ConcurrentHashMap[String, BloomFilterProbeAccumulator]()
 
-  /**
-   * Driver-only call. Registers a named accumulator `cubf_probe_<bfId>` with the active
-   * SparkContext on first access; returns the cached reference on subsequent calls. Naming
-   * mirrors `BloomFilterBuildCostAccumulator`'s `cubf_build_<bfId>`.
-   */
+  /** Registers or returns the cached `cubf_probe_<bfId>` accumulator. */
   def driverGetOrCreate(sc: SparkContext, bfId: String): BloomFilterProbeAccumulator =
     BloomFilterLongPairAccumulator.getOrCreateCached(
       cache, sc, bfId, "cubf_probe", () => new BloomFilterProbeAccumulator)

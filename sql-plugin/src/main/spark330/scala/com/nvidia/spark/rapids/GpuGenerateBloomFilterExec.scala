@@ -55,19 +55,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.AccumulatorV2
 
-/**
- * Per-BF build specification carried by the multi-spec operator.
- *
- * This matches the shape exposed by the optional inline-build
- * planner node. `InlineBFBuildReplacement` copies those fields via
- * reflection so there is no compile-time dependency on optional
- * planner classes.
- *
- * @param bfId            unique ID linking build and probe sides
- * @param keyColumnIndex  index of the build key in the output schema
- * @param numHashes       number of hash functions for this BF
- * @param numBits         total bits in this BF
- */
+/** Build specification for one inline bloom filter. */
 case class BFSpec(
     bfId: String,
     keyColumnIndex: Int,
@@ -75,36 +63,8 @@ case class BFSpec(
     numBits: Long)
 
 /**
- * Pass-through GPU operator that builds N bloom filters inline with
- * the join's build-side pipeline in a single columnar pass.
- *
- * All columnar batches are passed through unchanged. For each batch,
- * the operator iterates `specs` and, per spec, extracts the build key
- * column (at `spec.keyColumnIndex`), hashes it with XxHash64, and
- * inserts the hashed values into a per-partition per-spec GPU bloom
- * filter. After all batches in a partition are consumed, each spec's
- * BF is transferred to host memory and added to that spec's
- * `BloomFilterBuildAccumulator`.
- *
- * One accumulator is registered per spec and captured per task by
- * closure, so each partition publishes its partial bloom filter to
- * the matching `bfId`.
- *
- * Every GPU Scalar handle is closed on success and failure. The
- * iterator's normal exhaust path closes via `finalizeAllBFs`; a
- * `TaskCompletionListener` covers task failure or interruption when
- * the iterator is abandoned mid-batch.
- *
- * `buildCostUpdaters` is optional observability wiring. The default
- * `Map.empty` keeps this path inert until a planner explicitly
- * supplies updaters.
- *
- * @param specs              per-BF build specs (size >= 1)
- * @param bfVersion          BF format version (1 for Spark 3.x, 2 for 4.x)
- * @param seed               hash seed (V2 only; 0 for V1; shared across specs)
- * @param xxHashSeed         XxHash64 seed (matches probe-side hash; shared)
- * @param child              the build-side plan
- * @param buildCostUpdaters  optional per-bfId observability sink
+ * Pass-through GPU operator that builds inline bloom filters while returning child batches
+ * unchanged. Each partition publishes serialized partial BFs to driver accumulators by bfId.
  */
 case class GpuGenerateBloomFilterExec(
     specs: Seq[BFSpec],
@@ -123,20 +83,11 @@ case class GpuGenerateBloomFilterExec(
   // This operator does not change batch sizes; no coalescing needed.
   override val coalesceAfter: Boolean = false
 
-  // Keep this pass-through wrapper invisible to Spark's canonical-form plan matchers. Safe
-  // under the planner-layer invariants documented in design § 5.1 (items 5 and 6):
-  // content-addressed bfIds plus a sibling-coalescence pre-pass guarantee that any two build
-  // wrappers that canonicalize equal already represent the same logical bloom filter. Distinct
-  // bfIds over the same canonicalized child cannot coexist by construction, so collapsing
-  // equal canonical forms is the desired ReuseExchange outcome — not a correctness regression.
+  // Planner-side sibling coalescence makes equal children represent the same logical BF,
+  // allowing exchange reuse without mixing distinct bfIds.
   override protected def doCanonicalize(): SparkPlan = child.canonicalized
 
-  /**
-   * One accumulator per spec, keyed by `bfId`. Driver-side lazy val:
-   * the first access (from `internalDoExecuteColumnar` on the driver,
-   * before task dispatch) registers every accumulator with the
-   * SparkContext under the name `cuBF-<bfId>`.
-   */
+  /** Registers one build-result accumulator per `bfId` on first driver-side access. */
   @transient lazy val accumulators: Map[String, BloomFilterBuildAccumulator] = {
     val sc = sparkContext
     specs.map { spec =>
@@ -155,9 +106,7 @@ case class GpuGenerateBloomFilterExec(
     val accMap = accumulators // triggers eager driver-side registration
     val updatersCapture = buildCostUpdaters
 
-    // Compute the effective BF byte ceiling once on the driver. Any
-    // spec whose byte footprint exceeds that ceiling is marked as
-    // skipped in its accumulator without kicking off a GPU build.
+    // Mark oversized specs as skipped before tasks launch.
     val effMaxBytes = GpuGenerateBloomFilterExec.resolveEffectiveMaxFilterBytes()
     val oversizedBfIds: Set[String] = specsCapture.flatMap { spec =>
       val bfBytes = GpuGenerateBloomFilterExec.bytesForBits(spec.numBits)
@@ -173,11 +122,6 @@ case class GpuGenerateBloomFilterExec(
     child.executeColumnar().mapPartitions { iter =>
       val ctx = TaskContext.get()
       val partId = ctx.partitionId()
-      // Defensive: acquire the GPU semaphore before any BloomFilter / Hash GPU allocation
-      // or kernel in the build loop. The upstream operator typically holds it across the
-      // iterator, but if the planner emits this build over a transition or first-GPU stage
-      // the guarantee is implicit. This mirrors the pattern in GpuCartesianProductExec,
-      // GpuArrowEvalPythonExec, GpuShuffleExchangeExecBase, etc.
       GpuSemaphore.acquireIfNecessary(ctx)
       val numSpecs = specsCapture.size
       val bfs: Array[Scalar] = new Array[Scalar](numSpecs)
@@ -185,8 +129,7 @@ case class GpuGenerateBloomFilterExec(
       val skipSpec: Array[Boolean] = specsCapture
         .map(s => oversizedCapture.contains(s.bfId)).toArray
       @volatile var finalized = false
-      // Build-cost timer: start at first non-empty input batch, stop at finalize. One
-      // update per `(bfId, partition)` pair regardless of batch count.
+      // Build-cost timer: first non-empty batch through finalize.
       var taskStartNanos: Long = 0L
 
       def closeAllBfs(): Unit = {
@@ -206,9 +149,7 @@ case class GpuGenerateBloomFilterExec(
         }
       }
 
-      // Belt-and-suspenders: close every BF if the task fails or is
-      // interrupted mid-batch (normal exhaust path also closes, but
-      // only when hasNext returns false).
+      // Close BFs if the task stops before this iterator is exhausted.
       ctx.addTaskCompletionListener[Unit] { _ => closeAllBfs() }
 
       new Iterator[ColumnarBatch] {
@@ -237,10 +178,7 @@ case class GpuGenerateBloomFilterExec(
                 }
                 val keyCol = batch.column(spec.keyColumnIndex)
                   .asInstanceOf[GpuColumnVector].getBase
-                // Hash with XxHash64 before inserting into the BF.
-                // The probe side uses BloomFilterMightContain(bf,
-                // XxHash64(probeKey)), so the build side must use the
-                // same hash to produce matching bit positions.
+                // Match the probe-side XxHash64 input to BloomFilterMightContain.
                 withResource(Hash.xxhash64(hashSeed,
                     Array[ColumnView](keyCol))) { hashedCol =>
                   BloomFilter.put(bfs(i), hashedCol)
@@ -255,10 +193,7 @@ case class GpuGenerateBloomFilterExec(
 
         private def finalizeAllBFs(): Unit = {
           try {
-            // Compute wall time once per finalize and reuse it for every spec in this task.
-            // Wall time is partition-level, not per-spec: the operator runs a
-            // single fused columnar pass over all specs. Driver-side consumers
-            // must normalize by spec count if per-BF cost attribution is needed.
+            // One fused pass over all specs; per-BF attribution must normalize by spec count.
             val wallNanos = if (taskStartNanos != 0L) {
               System.nanoTime() - taskStartNanos
             } else 0L
@@ -266,8 +201,7 @@ case class GpuGenerateBloomFilterExec(
             while (i < numSpecs) {
               val spec = specsCapture(i)
               if (skipSpec(i)) {
-                // Overshoot: driver already called markSkipped().
-                // Tasks do not ship a partial BF for this spec.
+                // Oversized spec already marked skipped on the driver.
                 logInfo(s"[CuBF-GpuBuild] bfId=${spec.bfId} " +
                   s"partition=$partId SKIPPED (overshoot)")
               } else {
@@ -278,8 +212,7 @@ case class GpuGenerateBloomFilterExec(
                   logInfo(s"[CuBF-GpuBuild] bfId=${spec.bfId} " +
                     s"partition=$partId SENT ${bytes.length} bytes " +
                     s"(${rowsProcessed(i)} rows)")
-                  // One update per `(bfId, partition)` pair; skipped and empty
-                  // partitions do not contribute build cost.
+                  // Skipped and empty partitions do not contribute build cost.
                   updatersCapture.get(spec.bfId).foreach { u =>
                     u.update(wallNanos, bytes.length.toLong)
                   }
@@ -304,13 +237,7 @@ case class GpuGenerateBloomFilterExec(
       "GpuGenerateBloomFilterExec does not support row-based execution")
   }
 
-  /**
-   * Per-build update sink for `buildCostUpdaters`. Visible for test:
-   * the GPU-free unit test calls this directly with synthetic counts
-   * to assert the once-per-build invariant structurally.
-   * Production runtime calls the equivalent inline at finalize
-   * (avoiding `this` capture in the executor closure).
-   */
+  /** Records one metrics update for a finalized BF build. */
   private[rapids] def recordBuildUpdate(
       bfId: String, buildWallNanos: Long, bfBytes: Long): Unit = {
     buildCostUpdaters.get(bfId).foreach(_.update(buildWallNanos, bfBytes))
@@ -322,29 +249,14 @@ object GpuGenerateBloomFilterExec extends Logging {
   private val SparkVersionBFCapsClassName =
     "com.nvidia.spark.rapids.optimizer.cubloomfilter.SparkVersionBFCaps$"
 
-  /**
-   * V1 BloomFilterImpl indexing ceiling (~256 MB), used as the
-   * fail-safe fallback when the optional capability helper cannot
-   * be resolved.
-   */
+  /** V1 BloomFilterImpl indexing ceiling, used when planner caps are unavailable. */
   private val V1IndexingCeilingBytes: Long = (1L << 31) / 8L
 
-  /**
-   * Convert BF bits to bytes without overflowing: realistic values follow the normal
-   * ceil-divide path, while pathological values saturate so the overshoot guard fails closed.
-   */
+  /** Ceil-divide bits to bytes, saturating on overflow so oversized filters fail closed. */
   private def bytesForBits(numBits: Long): Long =
     if (numBits > Long.MaxValue - 7L) Long.MaxValue else (numBits + 7L) / 8L
 
-  /**
-   * Driver-side lookup of `SparkVersionBFCaps.effectiveMaxFilterBytes(Long)`.
-   *
-   * Optional capability helper supplied by the planner module. Resolved
-   * reflectively to avoid a compile-time classpath dependency on optional
-   * planner code. If reflection fails, return the V1 indexing ceiling
-   * (~256 MB) instead of `Long.MaxValue`, keeping the overshoot guard
-   * fail-closed.
-   */
+  // Resolve the planner-provided BF byte cap; fallback keeps overshoot checks fail-closed.
   def resolveEffectiveMaxFilterBytes(): Long = {
     try {
       val cls = Class.forName(SparkVersionBFCapsClassName)
@@ -362,11 +274,7 @@ object GpuGenerateBloomFilterExec extends Logging {
     }
   }
 
-  /**
-   * Copy a GPU bloom filter Scalar to host byte array.
-   * The Scalar is a LIST(UINT8) containing the full serialized BF
-   * (header + bit data) in Spark's BloomFilter wire format.
-   */
+  /** Copies a serialized GPU bloom-filter scalar to host bytes. */
   def scalarToHostBytes(bf: Scalar): Array[Byte] = {
     withResource(bf.getListAsColumnView) { view =>
       val devBuf = view.getData
@@ -381,19 +289,7 @@ object GpuGenerateBloomFilterExec extends Logging {
   }
 }
 
-/**
- * GpuOverrides registration for GpuGenerateBloomFilterExec.
- *
- * Since InlineBFBuildReplacement converts InlineBFBuildExec to GpuGenerateBloomFilterExec
- * BEFORE GpuOverrides runs, GpuOverrides needs to recognize it as an already-GPU node. This
- * registers it with a pass-through meta: tagPlanForGpu() is a no-op (always eligible) and
- * convertToGpu() wires children through the standard convertIfNeeded() path.
- *
- * The planner emits InlineBFBuildExec over an already-GPU child, so in practice the child is
- * already converted. The explicit childPlans.head.convertIfNeeded() call aligns with the
- * canonical pattern used by every other exec rule in the codebase and ensures correct conversion
- * even if the planner contract changes.
- */
+/** Registers the already-GPU inline BF build so GpuOverrides still converts its child. */
 object InlineBFBuildGpuOverride {
   val execRules: Map[Class[_ <: SparkPlan], ExecRule[_ <: SparkPlan]] = Seq(
     GpuOverrides.exec[GpuGenerateBloomFilterExec](
@@ -411,26 +307,10 @@ object InlineBFBuildGpuOverride {
 }
 
 /**
- * AccumulatorV2 that merges partial bloom filters via bitwise OR.
+ * Accumulates partial bloom filters by OR-ing their serialized data bytes.
  *
- * Each partition adds one partial BF (serialized as byte array).
- * The driver merges them incrementally: for each incoming partial,
- * it ORs the data portion (skipping the header) into the current
- * merged value.
- *
- * The header (version, numHashes, optional seed, numWords) is
- * identical across all partials since they were created with the
- * same parameters.
- *
- * Thread safety: AccumulatorV2 merge() is called from the
- * DAGScheduler event loop, serialized per accumulator.
- *
- * A task may publish a 4-byte all-zero skip sentinel via `add()` or
- * the exec's overshoot path may call `markSkipped()` directly. Once
- * any partition reports the sentinel, subsequent adds/merges leave
- * the accumulator in the sentinel state (skip wins). A real BF
- * payload cannot collide with this shape: every serialized
- * `BloomFilter` starts with a non-zero 4-byte version header.
+ * A 4-byte all-zero value is the skip sentinel; once seen, the accumulator stays skipped.
+ * Real bloom filters cannot collide because their serialized header starts with a non-zero version.
  */
 class BloomFilterBuildAccumulator extends AccumulatorV2[Array[Byte], Array[Byte]]
     with Logging {
@@ -444,9 +324,7 @@ class BloomFilterBuildAccumulator extends AccumulatorV2[Array[Byte], Array[Byte]
   override def copy(): AccumulatorV2[Array[Byte], Array[Byte]] = {
     val acc = new BloomFilterBuildAccumulator()
     if (merged != null) {
-      // Preserve sentinel identity on copy; never clone a sentinel
-      // reference into a fresh array; the driver-side merge relies
-      // on identity short-circuits.
+      // Preserve sentinel identity for driver-local fast checks.
       acc.merged = if (merged eq SkipSentinel) SkipSentinel else merged.clone()
     }
     acc
@@ -456,17 +334,13 @@ class BloomFilterBuildAccumulator extends AccumulatorV2[Array[Byte], Array[Byte]
     merged = null
   }
 
-  /** Publish the skip sentinel into this accumulator. Used by the
-   *  build exec when overshoot is detected pre-kernel-launch. */
+  /** Publishes the skip sentinel into this accumulator. */
   def markSkipped(): Unit = {
     merged = SkipSentinel
   }
 
   override def add(partial: Array[Byte]): Unit = {
-    // Defensive null guard. Production callers (`finalizeAllBFs` and `merge`) both null-check
-    // before invoking `add`, so this branch is unreachable today. The guard exists to close the
-    // NPE surface (`partial.clone()` below) for any future caller and to make the contract
-    // explicit: a null partial is a no-op, not a sentinel and not a contract violation.
+    // Null partials are ignored; skip is represented by SkipSentinel.
     if (partial == null) {
       return
     }
@@ -488,14 +362,7 @@ class BloomFilterBuildAccumulator extends AccumulatorV2[Array[Byte], Array[Byte]
 
   override def value: Array[Byte] = merged
 
-  /**
-   * Length-4 all-zero check covers both the driver-local sentinel identity and the deserialized
-   * content-equivalent form after task-to-driver accumulator shipping.
-   *
-   * The skip-sentinel (4 bytes, all zero) is safe by construction:
-   * valid serialized BFs are >= 12 bytes (V1/V2 header) with a non-zero version field in the
-   * first 4 bytes. Any 4-byte all-zero payload is unambiguously a sentinel, not a truncated BF.
-   */
+  /** Checks the skip sentinel by identity or serialized content. */
   private def isSkipShape(bytes: Array[Byte]): Boolean = {
     if (bytes == null) false
     else if (bytes eq SkipSentinel) true
@@ -505,15 +372,8 @@ class BloomFilterBuildAccumulator extends AccumulatorV2[Array[Byte], Array[Byte]
   }
 
   /**
-   * Bitwise OR the data portion of `other` into `merged`.
-   * The header is skipped (identical across all partials).
-   *
-   * A length mismatch indicates a planner-side contract violation (different `numBits` for
-   * the same `bfId` across partitions). Fail closed by publishing the skip sentinel rather
-   * than throwing — a thrown exception escapes into Spark's DAGScheduler accumulator-merge
-   * path, which catches via `NonFatal` and continues, leaving the accumulator with one
-   * partition's contribution missing. That partial filter would produce probe-side false
-   * negatives. Skip sentinel matches the oversize/unsafe-build fail-closed contract.
+   * OR `other` into `merged`, skipping the serialized BF header.
+   * Length mismatch means inconsistent BF specs, so fail closed with SkipSentinel.
    */
   private def mergeBytes(other: Array[Byte]): Unit = {
     if (merged.length != other.length) {
@@ -522,7 +382,7 @@ class BloomFilterBuildAccumulator extends AccumulatorV2[Array[Byte], Array[Byte]
       merged = SkipSentinel
       return
     }
-    // Detect header size from version byte
+    // Read version to choose header length.
     val version = ((merged(0) & 0xFF) << 24) | ((merged(1) & 0xFF) << 16) |
       ((merged(2) & 0xFF) << 8) | (merged(3) & 0xFF)
     val dataOffset = if (version == 2) 16 else 12
@@ -535,11 +395,6 @@ class BloomFilterBuildAccumulator extends AccumulatorV2[Array[Byte], Array[Byte]
 }
 
 object BloomFilterBuildAccumulator {
-  /**
-   * Driver-local skip-sentinel identity. The registry side recognizes
-   * the sentinel by content as well as identity, so accumulator state
-   * shipped executor-to-driver is still detected even after Spark's
-   * serialization breaks the reference link.
-   */
+  /** Canonical in-process skip value; deserialized data is recognized by 4-byte zero content. */
   val SkipSentinel: Array[Byte] = Array[Byte](0, 0, 0, 0)
 }

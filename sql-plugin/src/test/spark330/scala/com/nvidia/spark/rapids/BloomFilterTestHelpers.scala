@@ -42,44 +42,20 @@ spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids
 
 /**
- * Shared test fixtures for CuBF unit suites.
+ * Shared CuBF test fixtures.
  *
- * Contents:
- *   - Wire-format constants (`V1_HEADER_SIZE`, `V2_HEADER_SIZE`).
- *   - `makeBfBytes` — synthetic serialized BF payload builder for both V1 and V2 layouts.
- *   - `AbstractCountingSpy` plus the two concrete updater spies used to assert per-batch /
- *     per-build invariants without a GPU dependency.
- *
- * Wire-format layouts (design § 5.5, big-endian):
- *   V1:  version(4) | numHashes(4) | numWords(4)            | data(numWords * 8)
- *   V2:  version(4) | numHashes(4) | seed(4) | numWords(4)  | data(numWords * 8)
- *
- * `BloomFilterBuildAccumulator.mergeBytes` selects the data offset by reading the
- * version field from the merged buffer, so the same fixture builder exercises both
- * V1 and V2 merge paths just by varying the `version` argument.
+ * BF wire format is big-endian; V2 adds seed between numHashes and numWords.
  */
 object BloomFilterTestHelpers {
 
-  /** V1 header size. Used as the data-section base offset for V1 fixtures. */
   val V1_HEADER_SIZE: Int = 12
 
-  /** V2 header size. The extra 4 bytes carry the V2-only seed field at offsets 8..11. */
   val V2_HEADER_SIZE: Int = 16
 
-  /** Header size for a given wire-format version (defaults to V1 for any value other than 2). */
   def headerSize(version: Int): Int =
     if (version == 2) V2_HEADER_SIZE else V1_HEADER_SIZE
 
-  /**
-   * Build a synthetic serialized bloom-filter payload. The trailing data byte is
-   * controllable so OR-merge assertions can target a single representative bit pattern.
-   *
-   * @param version       wire-format version (1 or 2)
-   * @param numHashes     numHashes header field
-   * @param numWords      numWords header field; data section is `numWords * 8` bytes
-   * @param dataLastByte  value written into the trailing byte of the data section
-   * @param seed          V2-only seed header field; ignored for V1
-   */
+  /** Builds a synthetic serialized bloom-filter payload. */
   def makeBfBytes(
       version: Int = 1,
       numHashes: Int = 1,
@@ -110,12 +86,10 @@ object BloomFilterTestHelpers {
     buf(offset + 3) = ( value         & 0xFF).toByte
   }
 
-  /** Base for unit-test counting spies. Concrete subclasses extend an updater trait. */
   abstract class AbstractCountingSpy {
     var invocationCount: Int = 0
   }
 
-  /** Counting spy for `BloomFilterPredicateUpdater`. Records the most recent args. */
   final class CountingPredicateUpdater
       extends AbstractCountingSpy with BloomFilterPredicateUpdater {
     var lastRowsIn: Long = -1L
@@ -127,7 +101,6 @@ object BloomFilterTestHelpers {
     }
   }
 
-  /** Counting spy for `BloomFilterBuildCostUpdater`. Records the most recent args. */
   final class CountingBuildUpdater
       extends AbstractCountingSpy with BloomFilterBuildCostUpdater {
     var lastBuildWallNanos: Long = -1L
@@ -140,22 +113,15 @@ object BloomFilterTestHelpers {
   }
 }
 
-/**
- * Reflection-target shapes for `InlineBFBuildReplacement.readSpecs`. Defined as
- * top-level case classes (not nested in a test class) so they carry no implicit
- * outer reference; the public field accessors are the same surface a real
- * planner-emitted exec exposes.
- */
+/** Reflection-target shapes for `InlineBFBuildReplacement.readSpecs`. */
 object FakeInlineExecs {
 
-  /** Stand-in for the planner's per-BF build spec. */
   case class FakeSpec(
       bfId: String,
       keyColumnIndex: Int,
       numHashes: Int,
       numBits: Long)
 
-  /** Multi-spec inline-build exec shape (preferred reflective path). */
   case class FakeMultiSpecInlineExec(
       specs: Seq[FakeSpec],
       bfVersion: Int,
@@ -163,7 +129,6 @@ object FakeInlineExecs {
       xxHashSeed: Long,
       child: Any)
 
-  /** Legacy single-spec inline-build exec shape (fallback reflective path). */
   case class FakeLegacyInlineExec(
       bfId: String,
       keyColumnIndex: Int,
@@ -174,11 +139,7 @@ object FakeInlineExecs {
       xxHashSeed: Long,
       child: Any)
 
-  /**
-   * Shape whose `specs` accessor throws. Drives the fail-closed `NonFatal`
-   * branch in `replaceWithGpu` / `readSpecs`: a real planner module returning
-   * a broken accessor must surface as an exception, not a silent success.
-   */
+  /** Drives the reflective spec-access failure path in readSpecs. */
   case class FakeBrokenInlineExec(child: Any) {
     def specs: Seq[Any] = throw new RuntimeException("synthetic reflection failure")
     def bfVersion: Int = 1

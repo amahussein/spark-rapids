@@ -40,13 +40,7 @@
 {"spark": "411"}
 spark-rapids-shim-json-lines ***/
 
-// Two top-level packages declared with the explicit-block syntax.
-// The first contributes a test-only stub class under the FQCN that
-// `BloomFilterShims` looks up reflectively at runtime. The production
-// `com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec`
-// is unavailable on the test classpath, so this file owns that FQCN
-// for the unit-test scope only. At runtime in a packaged dist jar,
-// the test class never loads.
+// Test-scope stub for the optional planner class discovered by fully qualified class name.
 package com.nvidia.spark.rapids.optimizer.cubloomfilter {
 
   import org.apache.spark.rdd.RDD
@@ -54,16 +48,7 @@ package com.nvidia.spark.rapids.optimizer.cubloomfilter {
   import org.apache.spark.sql.catalyst.expressions.Attribute
   import org.apache.spark.sql.execution.LeafExecNode
 
-  /**
-   * Test-only stub whose FQCN matche `BloomFilterShims.TryReadBFRegistryExecClassName`.
-   * Exposes a no-arg `bfId` method (Scala case-class field accessor) that the production
-   * reflection path invokes.
-   * LIFECYCLE NOTE: This stub exists because the planner module
-   * (optimizer.cubloomfilter.TryReadBFRegistryExec) ships in a separate JAR that is not on
-   * the test classpath today. When the planner module lands as a dependency, this stub must
-   * be deleted — the real class will satisfy the reflection path directly. Until then,
-   * this stub is the only way to exercise the production FQCN lookup in unit tests.
-   */
+  /** Test-only stub for `BloomFilterShims.TryReadBFRegistryExecClassName`. */
   case class TryReadBFRegistryExec(bfId: String) extends LeafExecNode {
     override def output: Seq[Attribute] = Seq.empty
     override protected def doExecute(): RDD[InternalRow] =
@@ -79,27 +64,11 @@ package com.nvidia.spark.rapids.shims {
   import org.apache.spark.sql.catalyst.InternalRow
   import org.apache.spark.sql.catalyst.expressions.Attribute
   import org.apache.spark.sql.execution.{LeafExecNode, SparkPlan, UnaryExecNode}
-  // Same-file synthetic class brings the FQCN into the test classpath.
   import com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec
 
-  /**
-   * Regression coverage for `BloomFilterShims`'s AQE-aware
-   * `findBfIdInPlan`. AQE can wrap subquery plans in nodes whose
-   * `children` returns `Seq.empty`, so the helper probes common AQE
-   * accessors reflectively before falling back to normal child
-   * traversal.
-   */
+  /** Regression coverage for AQE-aware `findBfIdInPlan`. */
   class BloomFilterShimsSuite extends AnyFunSuite {
 
-    // --- Synthetic plan stubs (no SparkSession required) ---
-
-    /**
-     * Stub whose class name contains `AdaptiveSparkPlanExec` and
-     * exposes `executedPlan` returning the wrapped inner plan.
-     * `children` is `Seq.empty` per the AQE quirk that the helper
-     * defends against. Triggers the substring match in
-     * `tryAqePlanFields`.
-     */
     private case class FakeAdaptiveSparkPlanExec(inner: SparkPlan)
         extends LeafExecNode {
       override def output: Seq[Attribute] = Seq.empty
@@ -108,12 +77,6 @@ package com.nvidia.spark.rapids.shims {
         throw new UnsupportedOperationException("test stub")
     }
 
-    /**
-     * Stub whose class name contains `AdaptiveSparkPlanExec` but
-     * exposes only `currentPhysicalPlan` (a different AQE accessor
-     * than `executedPlan`). Verifies the helper probes all 4
-     * accessor names in priority order.
-     */
     private case class FakeAdaptiveSparkPlanExecAlt(inner: SparkPlan)
         extends LeafExecNode {
       override def output: Seq[Attribute] = Seq.empty
@@ -122,16 +85,12 @@ package com.nvidia.spark.rapids.shims {
         throw new UnsupportedOperationException("test stub")
     }
 
-    /** A non-AQE plain leaf for negative-test coverage. */
     private case class PlainLeafExec() extends LeafExecNode {
       override def output: Seq[Attribute] = Seq.empty
       override protected def doExecute(): RDD[InternalRow] =
         throw new UnsupportedOperationException("test stub")
     }
 
-    /** A simple UnaryExecNode wrapping a child, exercising standard
-     *  `children` traversal (the path NOT going through
-     *  `tryAqePlanFields`). */
     private case class WrapExec(child: SparkPlan) extends UnaryExecNode {
       override def output: Seq[Attribute] = Seq.empty
       override protected def doExecute(): RDD[InternalRow] =
@@ -139,8 +98,6 @@ package com.nvidia.spark.rapids.shims {
       override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
         copy(child = newChild)
     }
-
-    // --- tryAqePlanFields helper coverage ---
 
     test("tryAqePlanFields: returns Seq.empty for non-AQE plans") {
       val plain = PlainLeafExec()
@@ -159,9 +116,6 @@ package com.nvidia.spark.rapids.shims {
     }
 
     test("tryAqePlanFields: probes all 4 accessor names in priority order") {
-      // Stub exposes only `currentPhysicalPlan` (priority #2), not
-      // `executedPlan` (#1). Helper should still surface the inner
-      // plan via the second-priority accessor.
       val inner = PlainLeafExec()
       val aqe = FakeAdaptiveSparkPlanExecAlt(inner)
       val extracted = BloomFilterShims.tryAqePlanFields(aqe)
@@ -171,13 +125,7 @@ package com.nvidia.spark.rapids.shims {
         "currentPhysicalPlan's return value must be in the extracted list")
     }
 
-    // --- findBfIdInPlan integration coverage ---
-
     test("findBfIdInPlan: AQE-wrapped subquery regression case") {
-      // Synthetic plan: AdaptiveSparkPlanExec wraps an inner plan
-      // whose only leaf is a TryReadBFRegistryExec. The standard
-      // tree walk would miss this (AQE.children = Seq.empty); the
-      // AQE traversal helper must surface the leaf reflectively.
       val tryRead = TryReadBFRegistryExec(bfId = "cubf-aqe-regression-test")
       val aqeWrapped = FakeAdaptiveSparkPlanExec(tryRead)
       val result = BloomFilterShims.findBfIdInPlan(aqeWrapped)
@@ -186,9 +134,6 @@ package com.nvidia.spark.rapids.shims {
     }
 
     test("findBfIdInPlan: non-AQE direct child path still works") {
-      // Standard `children` traversal: no AQE wrapping.
-      // findBfIdInPlan should walk directly to the
-      // TryReadBFRegistryExec via children.
       val tryRead = TryReadBFRegistryExec(bfId = "cubf-non-aqe-path")
       val wrapped = WrapExec(tryRead)
       val result = BloomFilterShims.findBfIdInPlan(wrapped)
@@ -198,15 +143,11 @@ package com.nvidia.spark.rapids.shims {
     }
 
     test("findBfIdInPlan: leaf TryReadBFRegistryExec at root") {
-      // Trivial case: plan is exactly TryReadBFRegistryExec.
       val tryRead = TryReadBFRegistryExec(bfId = "cubf-root")
       assert(BloomFilterShims.findBfIdInPlan(tryRead) === Some("cubf-root"))
     }
 
     test("findBfIdInPlan: returns None when no TryReadBFRegistryExec is reachable") {
-      // Plan tree without the magic-named leaf. findBfIdInPlan must
-      // return None cleanly so resolveProbeWiring degrades to
-      // (None, None) and the GPU operator runs without instrumentation.
       val plain = PlainLeafExec()
       val aqeWrapped = FakeAdaptiveSparkPlanExec(plain)
       assert(BloomFilterShims.findBfIdInPlan(aqeWrapped).isEmpty,

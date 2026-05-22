@@ -63,9 +63,7 @@ import org.apache.spark.sql.rapids.aggregate.{CpuToGpuAggregateBufferConverter,
 
 object BloomFilterShims extends Logging {
 
-  // Probe-side leaf node emitted by the optional planner module. The execution layer discovers it
-  // by FQCN to extract the `bfId` for accumulator wiring. If the planner module is absent, the
-  // lookup silently returns None and the probe path runs without instrumentation.
+  // Optional planner leaf that carries the bfId for metrics wiring.
   private val TryReadBFRegistryExecClassName =
     "com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec"
 
@@ -117,11 +115,7 @@ object BloomFilterShims extends Logging {
             aggBuffer.copy(dataType = a.dataType)(aggBuffer.exprId, aggBuffer.qualifier)
           }
 
-          // This is a defensive correctness fix for the rare mixed CPU/GPU bridge path.
-          // BloomFilterAggregate crosses the CPU/GPU boundary as BinaryType in both directions,
-          // but empty GPU partial buffers can be null while Spark CPU final expects a serialized
-          // empty bloom filter. We still need a converter even though the runtime type
-          // is unchanged.
+          // Empty GPU partials can be null; CPU final expects a serialized empty BF.
           override def createCpuToGpuBufferConverter(): CpuToGpuAggregateBufferConverter =
             CpuToGpuBloomFilterBufferConverter()
 
@@ -159,6 +153,7 @@ object BloomFilterShims extends Logging {
   }
 
   private[shims] def findBfIdInPlan(plan: SparkPlan): Option[String] = {
+    // Each BloomFilterMightContain scalar subquery has at most one planner BF registry read.
     var found: Option[String] = None
     def visit(p: SparkPlan): Unit = {
       if (found.isEmpty && p != null) {

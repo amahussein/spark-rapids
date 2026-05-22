@@ -20,14 +20,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 import org.apache.spark.SparkContext
 
-/**
- * Driver-side aggregator of build-side `(buildWallNanos, bfBytes)` per bfId. Companion to
- * `BloomFilterProbeAccumulator` (the probe-side counterpart).
- *
- * Implements `BloomFilterBuildCostUpdater` so call sites in `GpuGenerateBloomFilterExec`'s
- * finalize path can hold a trait-typed reference and a counting spy can substitute for it under
- * unit test. `update` fires once per BF build at finalize, never per input batch.
- */
+/** Driver-side build-cost accumulator keyed by bfId. */
 class BloomFilterBuildCostAccumulator
     extends BloomFilterLongPairAccumulator
     with BloomFilterBuildCostUpdater {
@@ -43,11 +36,7 @@ object BloomFilterBuildCostAccumulator {
 
   private val cache = new ConcurrentHashMap[String, BloomFilterBuildCostAccumulator]()
 
-  /**
-   * Driver-only call. Registers a named accumulator `cubf_build_<bfId>` with the active
-   * SparkContext on first access; returns the cached reference on subsequent calls. Naming
-   * mirrors `BloomFilterProbeAccumulator`'s `cubf_probe_<bfId>`.
-   */
+  /** Registers or returns the cached `cubf_build_<bfId>` accumulator. */
   def driverGetOrCreate(sc: SparkContext, bfId: String): BloomFilterBuildCostAccumulator =
     BloomFilterLongPairAccumulator.getOrCreateCached(
       cache, sc, bfId, "cubf_build", () => new BloomFilterBuildCostAccumulator)

@@ -50,15 +50,9 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.internal.SQLConf
 
 /**
- * Pre-GpuOverrides rule that replaces an optional inline bloom-filter
- * build node with `GpuGenerateBloomFilterExec`. Runs before
- * GpuOverrides so the GPU operator is in place when GpuOverrides
- * processes the plan.
+ * Replaces the optional planner's InlineBFBuildExec with `GpuGenerateBloomFilterExec`.
  *
- * The planner node is detected by class name and read via reflection
- * so this module has no compile-time dependency on optional planner
- * classes. If the node shape is not available or reflection fails,
- * the original plan is returned unchanged.
+ * Reflection keeps this rule inert when the planner module is absent.
  */
 case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
 
@@ -98,20 +92,7 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
     }
   }
 
-  /**
-   * Build the per-bfId `BloomFilterBuildCostUpdater` map used by
-   * `GpuGenerateBloomFilterExec` for optional build-cost
-   * observability.
-   *
-   * Returns `Map.empty` whenever:
-   *   - either feature flag is off
-   *   - the active SparkSession is unavailable
-   *   - the bfId list is empty
-   *
-   * When enabled, registers one `BloomFilterBuildCostAccumulator`
-   * per bfId via `driverGetOrCreate` (idempotent; repeats reuse the
-   * cached registration).
-   */
+  /** Creates bfId-keyed build-cost updaters when CuBF feedback is enabled. */
   private def resolveBuildCostUpdaters(
       bfIds: Seq[String]): Map[String, BloomFilterBuildCostUpdater] = {
     if (bfIds.isEmpty || !CuBFFeedbackFlags.isEnabled(SQLConf.get)) {
@@ -128,21 +109,7 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
     }
   }
 
-  /**
-   * Read the per-BF spec list from the reflective exec.
-   *
-   * Preferred path: the exec has a `specs` accessor returning a
-   * `Seq[_]` of build specifications. Each element is decomposed
-   * via `.bfId` / `.keyColumnIndex` / `.numHashes` / `.numBits`
-   * accessors into a local BFSpec.
-   *
-   * Legacy fallback: if no `specs` method exists, read the old
-   * single-field accessors and wrap in a single-element Seq.
-   *
-   * Both paths produce a uniform `Seq[BFSpec]` so downstream
-   * `GpuGenerateBloomFilterExec` sees a single shape regardless of
-   * which planner-module exec shape produced it.
-   */
+  /** Reads current multi-spec shape, falling back to the legacy single-spec shape. */
   private[rapids] def readSpecs(exec: Any): Seq[BFSpec] = {
     val execClass = exec.getClass
     val specsMethod = try Some(execClass.getMethod("specs")) catch {
@@ -176,10 +143,7 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
 }
 
 object InlineBFBuildReplacement {
-  // The FQCN matches a CPU stub from the optional planner module.
-  // Reflection-only detection means this rule has zero compile-time
-  // dependency on planner classes: when the planner JAR is absent,
-  // the lookup never matches and the rule is a no-op.
+  // Fully qualified class name of the optional planner's CPU stub.
   private val inlineBFClassName =
     "com.nvidia.spark.rapids.optimizer.cubloomfilter.InlineBFBuildExec"
 
@@ -191,9 +155,7 @@ object InlineBFBuildReplacement {
     }
   }
 
-  // Fast-path: avoid constructing the Rule + transformUp when no
-  // InlineBFBuildExec markers are present (the common case without
-  // the planner module).
+  // Avoid transformUp unless the optional inline-build node is present.
   def isNeeded(plan: SparkPlan): Boolean = {
     plan.find(_.getClass.getName == inlineBFClassName).isDefined
   }

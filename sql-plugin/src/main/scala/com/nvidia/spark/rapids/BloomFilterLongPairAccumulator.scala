@@ -21,19 +21,11 @@ import java.util.concurrent.ConcurrentHashMap
 import org.apache.spark.SparkContext
 import org.apache.spark.util.AccumulatorV2
 
-/**
- * Shared base for the CuBF observability accumulators that aggregate a `(Long, Long)` pair per
- * `bfId`. Owns the AccumulatorV2 boilerplate (state, isZero/copy/reset/add/merge/value) so each
- * concrete subclass only has to declare which updater trait it implements and how to spawn an
- * empty instance for `copy()`.
- *
- * Concrete subclasses ship executor-side `update(a, b)` deltas back to the driver via Spark's
- * accumulator serialization protocol; the driver-merged value is the per-bfId pair sum.
- */
+/** AccumulatorV2 base for per-bfId `(Long, Long)` CuBF metrics. */
 abstract class BloomFilterLongPairAccumulator
     extends AccumulatorV2[(Long, Long), (Long, Long)] {
 
-  /** Spawn a fresh, zero-state instance of the same concrete type. Used by `copy()`. */
+  /** Creates a zero-state instance of the concrete accumulator type. */
   protected def newEmpty(): BloomFilterLongPairAccumulator
 
   private var first: Long = 0L
@@ -69,14 +61,7 @@ abstract class BloomFilterLongPairAccumulator
 
 object BloomFilterLongPairAccumulator {
 
-  /**
-   * Idempotent driver-side registration helper. On first access for a given `bfId`, builds a
-   * fresh accumulator via `factory`, registers it with `sc` under the name `<namePrefix>_<bfId>`,
-   * and caches the reference. Subsequent calls return the cached instance.
-   *
-   * The returned reference is safe to capture in a closure shipped to executors; AccumulatorV2's
-   * serialization protocol carries executor-side `update` deltas back to the driver.
-   */
+  /** Registers or returns a cached named accumulator for `bfId`. */
   def getOrCreateCached[A <: BloomFilterLongPairAccumulator](
       cache: ConcurrentHashMap[String, A],
       sc: SparkContext,

@@ -72,7 +72,6 @@ case class GpuBloomFilterMightContain(
       case s: GpuScalar => GpuBloomFilter(s)
       case x => throw new IllegalStateException(s"Expected GPU scalar, found $x")
     }
-    // Don't install the callback if in a unit test
     Option(TaskContext.get()).foreach { tc =>
       onTaskCompletion(tc) {
         close()
@@ -112,9 +111,7 @@ case class GpuBloomFilterMightContain(
     }
   }
 
-  // Drop bfId and probeUpdater on canonicalization so equivalent
-  // expressions with different or absent observability wiring produce
-  // equal canonical forms.
+  // Metrics wiring is not part of expression identity.
   override lazy val canonicalized: Expression = {
     GpuBloomFilterMightContain(
       bloomFilterExpression.canonicalized,
@@ -145,11 +142,7 @@ case class GpuBloomFilterMightContain(
     }
   }
 
-  /**
-   * Per-batch update sink for `probeUpdater`. Visible for test:
-   * the GPU-free unit test calls this directly with synthetic counts
-   * to assert the once-per-batch invariant structurally.
-   */
+  /** Records one metrics update for the current predicate batch. */
   private[rapids] def recordBatchUpdate(rowsIn: Long, rowsPassed: Long): Unit = {
     probeUpdater.foreach(_.update(rowsIn, rowsPassed))
   }

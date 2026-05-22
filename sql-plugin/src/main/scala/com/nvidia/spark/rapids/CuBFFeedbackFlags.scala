@@ -21,19 +21,9 @@ import scala.util.control.NonFatal
 import org.apache.spark.sql.internal.SQLConf
 
 /**
- * Single source of truth for the CuBF runtime-feedback feature-flag keys and the gate that both
- * call sites use to decide whether to wire optional observability accumulators.
+ * Read-only mirror of CuBF runtime-feedback flags owned by the planner module.
  *
- * Today the gate is the AND of two flags; flag arity is an implementation detail of `isEnabled`.
- * Every flag defaults to `false`. All must parse to `true` for the gate to open.
- *
- * Consumers:
- *   - `BloomFilterShims.resolveProbeWiring` — probe-side `BloomFilterProbeAccumulator` wiring.
- *   - `InlineBFBuildReplacement.resolveBuildCostUpdaters` — build-side
- *     `BloomFilterBuildCostAccumulator` wiring.
- *
- * When the gate is closed, both call sites return inert state and the GPU operators run without
- * instrumentation, exactly as if the optional planner module were absent.
+ * The executor uses these keys to decide whether to wire optional metrics accumulators.
  */
 object CuBFFeedbackFlags {
 
@@ -43,15 +33,7 @@ object CuBFFeedbackFlags {
   private[rapids] val RUNTIME_FEEDBACK_INSTRUMENTATION_ENABLED_KEY =
     "spark.rapids.sql.cuBloomFilter.runtimeFeedback.instrumentation.enabled"
 
-  /**
-   * Gate predicate over the runtime-feedback flags.
-   *
-   * Returns `true` only when every gating flag is present in the active `SQLConf` and parses to
-   * `true`. Returns `false` for any value that fails to parse as a boolean (`yes` / `no` / `1` /
-   * empty / etc.). Both call sites depend on this fail-closed behavior to keep observability
-   * optional: a malformed flag value must never fail the query — it must silently disable
-   * instrumentation.
-   */
+  /** True only when all feedback flags parse as true; malformed values fail closed. */
   def isEnabled(conf: SQLConf): Boolean =
     flagEnabled(conf, RUNTIME_FEEDBACK_ENABLED_KEY) &&
       flagEnabled(conf, RUNTIME_FEEDBACK_INSTRUMENTATION_ENABLED_KEY)

@@ -45,11 +45,7 @@ import com.nvidia.spark.rapids.BloomFilterTestHelpers._
 import com.nvidia.spark.rapids.FakeInlineExecs._
 import org.scalatest.funsuite.AnyFunSuite
 
-/**
- * Tests for InlineBFBuildReplacement, GpuOverrides registration, and
- * BloomFilterBuildAccumulator. These verify the reflection-based replacement
- * mechanism and accumulator merge logic without needing GPU or SparkSession.
- */
+/** Tests CuBF replacement helpers and bloom-filter accumulator merge behavior. */
 class InlineBFBuildReplacementSuite extends AnyFunSuite {
 
   Seq(1, 2).foreach { version =>
@@ -93,10 +89,6 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
   }
 
   test("accumulator_merge_v2_preserves_seed_header_field") {
-    // The V2 wire format carries a 4-byte seed at offsets 8..11. `mergeBytes`
-    // selects dataOffset=16 for V2 and OR-merges only data bytes (offset >= 16);
-    // the seed bytes must survive the merge unchanged. Without this guarantee a
-    // multi-partition V2 merge would corrupt the seed and break probe-side hashing.
     val left  = makeBfBytes(version = 2, seed = 0xDEADBEEF, dataLastByte = 0x0F)
     val right = makeBfBytes(version = 2, seed = 0xDEADBEEF, dataLastByte = 0xF0)
     val acc = new BloomFilterBuildAccumulator()
@@ -116,20 +108,10 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
     val acc = new BloomFilterBuildAccumulator()
     acc.add(null)
     assert(acc.isZero,
-      "add(null) must not mutate state; production never calls this path " +
-        "but the guard closes the NPE surface for future callers")
+      "add(null) must not mutate state")
   }
 
   test("BloomFilterBuildAccumulator size mismatch fails closed via skip sentinel") {
-    // A length mismatch in mergeBytes indicates a planner-side bug emitting different
-    // numBits for the same bfId across partitions. The accumulator must NOT throw — a
-    // thrown exception escapes into Spark's DAGScheduler accumulator-merge path, which
-    // catches it via NonFatal and continues; the BF would then be shipped to the probe
-    // side missing one partition's contribution, producing false negatives in
-    // mightContainLong and dropping rows that should match the join. Instead, the
-    // accumulator must publish the skip sentinel so the probe side applies no filter —
-    // matching the oversize-skip and unsafe-build fail-closed contract elsewhere in
-    // GpuGenerateBloomFilterExec.
     val acc = new BloomFilterBuildAccumulator()
     val partitionA = makeBfBytes(version = 1, numWords = 1, dataLastByte = 0x0F)
     val partitionB = makeBfBytes(version = 1, numWords = 2, dataLastByte = 0xF0)
@@ -148,8 +130,6 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
   }
 
   test("InlineBFBuildReplacement class name is resolvable") {
-    // The optional planner class is not on the unit-test classpath; only the
-    // class-name constant inside the rule needs to be well-formed.
     val replacement = InlineBFBuildReplacement()
     assert(replacement != null)
   }
@@ -175,16 +155,11 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
     val ex = intercept[Exception] {
       InlineBFBuildReplacement().readSpecs(broken)
     }
-    // The exception must surface so the apply-level NonFatal catch can
-    // discard the replacement and return the original plan unchanged.
     assert(ex.getCause != null || ex.getMessage != null,
       "reflection failure must surface as an exception, not silently succeed")
   }
 
   test("legacy_fallback_tolerates_old_single_spec") {
-    // When only the legacy single-field accessors are available, readSpecs must
-    // wrap a single BFSpec so downstream GpuGenerateBloomFilterExec always sees
-    // a uniform Seq[BFSpec] shape.
     val legacy: FakeLegacyInlineExec = FakeLegacyInlineExec(
       bfId = "legacy-single",
       keyColumnIndex = 3,

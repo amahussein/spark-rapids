@@ -46,7 +46,6 @@ import org.apache.spark.sql.rapids.shims.TrampolineConnectShims._
 
 class BloomFilterAggregateQuerySuite extends BloomFilterAggregateQuerySuiteBase {
 
-  // test with GPU bloom build, GPU bloom probe
   for (numEstimated <- Seq(SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_ITEMS.defaultValue.get)) {
     for (numBits <- Seq(SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_BITS.defaultValue.get)) {
       testSparkResultsAreEqual(
@@ -57,7 +56,6 @@ class BloomFilterAggregateQuerySuite extends BloomFilterAggregateQuerySuiteBase 
     }
   }
 
-  // test with CPU bloom build, GPU bloom probe
   for (numEstimated <- Seq(4096L, 4194304L, Long.MaxValue,
     SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_ITEMS.defaultValue.get)) {
     for (numBits <- Seq(4096L, 4194304L,
@@ -72,7 +70,6 @@ class BloomFilterAggregateQuerySuite extends BloomFilterAggregateQuerySuiteBase 
     }
   }
 
-  // test with GPU bloom build, CPU bloom probe
   for (numEstimated <- Seq(4096L, 4194304L, Long.MaxValue,
     SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_ITEMS.defaultValue.get)) {
     for (numBits <- Seq(4096L, 4194304L,
@@ -87,7 +84,6 @@ class BloomFilterAggregateQuerySuite extends BloomFilterAggregateQuerySuiteBase 
     }
   }
 
-  // test with partial/final-only GPU bloom build, CPU bloom probe
   for (mode <- Seq("partial", "final")) {
     for (numEstimated <- Seq(SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_ITEMS.defaultValue.get)) {
       for (numBits <- Seq(SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_BITS.defaultValue.get)) {

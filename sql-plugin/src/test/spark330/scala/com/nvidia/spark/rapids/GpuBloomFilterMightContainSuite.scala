@@ -47,14 +47,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.types.{BinaryType, LongType}
 
-/**
- * GPU-free unit tests for `GpuBloomFilterMightContain` observability wiring.
- *
- * Substitutes a counting spy `BloomFilterPredicateUpdater` to assert the per-batch
- * contract structurally without the GPU `mightContainLong` / `sum(DType.INT64)` path.
- * Also verifies that two instances differing only in `bfId` / `probeUpdater` canonicalize
- * equal.
- */
+/** Tests `GpuBloomFilterMightContain` metrics wiring and canonicalization. */
 class GpuBloomFilterMightContainSuite extends AnyFunSuite {
 
   private def newExpr(

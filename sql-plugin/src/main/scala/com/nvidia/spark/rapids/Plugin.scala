@@ -54,23 +54,11 @@ class PluginException(msg: String) extends RuntimeException(msg)
 
 case class CudfVersionMismatchException(errorMsg: String) extends PluginException(errorMsg)
 
-/**
- * Columnar rule that chains the RAPIDS GPU override rules.
- *
- * preColumnarTransitions (runs before Spark's ColumnarToRow/RowToColumnar):
- *   1. Spark-version shims may prepare plans before CPU-to-GPU conversion.
- *      The default shim implementation is a no-op.
- *   2. GpuOverrides - the main CPU-to-GPU conversion pass.
- *
- * postColumnarTransitions (runs after transitions):
- *   GpuTransitionOverrides - adds GPU-to-CPU data format transitions.
- */
+/** Columnar rules for RAPIDS plan conversion and transition insertion. */
 case class ColumnarOverrideRules() extends ColumnarRule with Logging {
   lazy val overrides: Rule[SparkPlan] = GpuOverrides()
   lazy val overrideTransitions: Rule[SparkPlan] = new GpuTransitionOverrides()
 
-  // Wrapper is stateless — caching it would save only the object header.
-  // The heavy work (GpuOverrides construction) is cached in `overrides`.
   override def preColumnarTransitions: Rule[SparkPlan] = {
     new Rule[SparkPlan] {
       override def apply(plan: SparkPlan): SparkPlan = {

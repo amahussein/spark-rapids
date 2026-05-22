@@ -48,10 +48,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.SparkPlan
 
-/**
- * Tests for multi-spec `GpuGenerateBloomFilterExec`. These exercise driver-side wiring,
- * accumulator registration, and per-spec independence without running GPU kernels.
- */
+/** Tests multi-spec `GpuGenerateBloomFilterExec` driver-side behavior. */
 class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     with BeforeAndAfterAll {
 
@@ -90,10 +87,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       seed = 0,
       xxHashSeed = 42L,
       child = stubChild())
-    // Touching `accumulators` forces the @transient lazy val to
-    // register every accumulator with the SparkContext on the
-    // current (driver) thread before task dispatch; the property
-    // validated here.
     val accs = exec.accumulators
     assert(accs.size == 3,
       s"expected 3 accumulators, got ${accs.size}")
@@ -108,9 +101,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("single_spec_registers_one_accumulator") {
-    // Regression guard: a single-element specs list must register
-    // exactly one accumulator, with the same naming pattern the
-    // operator uses for all inline bloom filters.
     val spec = BFSpec("single", 0, 7, 524288L)
     val exec = GpuGenerateBloomFilterExec(
       specs = Seq(spec),
@@ -140,8 +130,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       accs("bf-A").add(makeBfBytes(version = version, dataLastByte = 0xF0))
       accs("bf-B").add(makeBfBytes(version = version, dataLastByte = 0x11))
       accs("bf-B").add(makeBfBytes(version = version, dataLastByte = 0x22))
-      // After per-partition OR-merge, bf-A's data byte is 0xFF and bf-B's is 0x33.
-      // No cross-bleed: bf-B stays 0x33 (not 0xFF) and bf-A stays 0xFF (not 0x33).
       val bfA = accs("bf-A").value
       val bfB = accs("bf-B").value
       val dataLastIdx = headerSize(version) + 7
@@ -154,9 +142,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("canonical_is_always_transparent") {
-    // Canonical form delegates to the child so wrapper-class and
-    // per-spec-list differences disappear from Spark's sameResult /
-    // ReuseExchange comparison.
     val child = stubChild()
     val execSingle = GpuGenerateBloomFilterExec(
       specs = Seq(BFSpec("single", 0, 5, 100000L)),
@@ -170,8 +155,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       "single-spec GpuGenerateBloomFilterExec must be transparent")
     assert(execMulti.canonicalized == child.canonicalized,
       "multi-spec GpuGenerateBloomFilterExec must be transparent")
-    // Sibling wrappers with identical specs must canonicalize to each other so that
-    // ReuseExchange treats them as the same physical exchange.
     val execMulti2 = GpuGenerateBloomFilterExec(
       specs = Seq(
         BFSpec("bf-A", 0, 5, 100000L),
@@ -183,9 +166,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("accumulator_markSkipped_publishes_sentinel_value") {
-    // Direct accumulator API check: markSkipped() leaves value() as
-    // the local SkipSentinel identity. The driver-side merge path
-    // depends on this for the build exec's overshoot fast-path.
     val acc = new BloomFilterBuildAccumulator()
     assert(acc.isZero)
     acc.markSkipped()
@@ -233,8 +213,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("resolveEffectiveMaxFilterBytes is fail-safe on missing capability helper") {
-    // On reflection failure, the helper falls back to the V1 indexing
-    // ceiling rather than Long.MaxValue.
     val cap = GpuGenerateBloomFilterExec.resolveEffectiveMaxFilterBytes()
     val v1Ceiling = (1L << 31) / 8L
     assert(cap == v1Ceiling,
@@ -254,10 +232,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("recordBuildUpdate invokes updater exactly once per BF build") {
-    // Single-spec scenario. The synthetic args stand in for the
-    // production finalize path's `(System.nanoTime() - taskStart,
-    // bytes.length.toLong)`; what's load-bearing is the invocation
-    // count == 1, not the args.
     val spy = new CountingBuildUpdater
     val exec = GpuGenerateBloomFilterExec(
       specs = Seq(BFSpec("cubf-r7-single", 0, 5, 100000L)),
@@ -272,7 +246,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("multi-BF build invokes each updater exactly once") {
-    // Each spec gets its own counting spy so we can verify no cross-bleed.
     val spyA = new CountingBuildUpdater
     val spyB = new CountingBuildUpdater
     val spyC = new CountingBuildUpdater
@@ -287,8 +260,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
         "cubf-r7-A" -> spyA,
         "cubf-r7-B" -> spyB,
         "cubf-r7-C" -> spyC))
-    // Synthetic finalize: one update per spec, distinct (wall, bytes)
-    // tuples to prove no cross-contamination.
     exec.recordBuildUpdate("cubf-r7-A", 100L, 1024L)
     exec.recordBuildUpdate("cubf-r7-B", 200L, 2048L)
     exec.recordBuildUpdate("cubf-r7-C", 300L, 4096L)
@@ -305,8 +276,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       specs = Seq(BFSpec("cubf-no-updater", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild())
-    // Default `buildCostUpdaters = Map.empty`. The Map.get returns
-    // None, foreach is a no-op; no exception thrown.
     exec.recordBuildUpdate("cubf-no-updater", 1000000L, 8192L)
     succeed
   }
@@ -318,7 +287,6 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild(),
       buildCostUpdaters = Map("cubf-known" -> spy))
-    // Mismatched bfId must not fire the spy nor raise.
     exec.recordBuildUpdate("cubf-unknown", 1000L, 512L)
     assert(spy.invocationCount === 0,
       "updater must not fire for an unknown bfId")
@@ -336,17 +304,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       "applyIfNeeded must return the original plan reference unchanged")
   }
 
-  // NOTE: A contract test for `InlineBFBuildGpuOverride.convertToGpu` (asserting it wires
-  // children via `childPlans.head.convertIfNeeded()` rather than returning `exec` unchanged)
-  // belongs in the `tests/` module. Constructing the production meta here triggers
-  // `GpuOverrides.execs` -> `ExternalSource.execRules` -> reflective load of
-  // `com.nvidia.spark.rapids.delta.DeltaProbeImpl`, which is not on the `sql-plugin` test
-  // classpath. The fix itself is enforced by the explicit `exec.copy(child = ...)` idiom in
-  // `InlineBFBuildGpuOverride.execRules` and by the scaladoc on that registration.
-
   test("buildCostUpdaters do not break canonical transparency") {
-    // `doCanonicalize` returns `child.canonicalized`, which drops
-    // every per-build field including the `buildCostUpdaters` map.
     val child = stubChild()
     val spy1 = new CountingBuildUpdater
     val spy2 = new CountingBuildUpdater
