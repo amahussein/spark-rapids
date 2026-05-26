@@ -49,7 +49,7 @@ This document covers the following topics:
   * [11.1 GPU Memory on Executors](#111-gpu-memory-on-executors)
   * [11.2 Network Between Executors and Driver](#112-network-between-executors-and-driver)
   * [11.3 Driver Heap and Merge CPU](#113-driver-heap-and-merge-cpu)
-  * [11.4 Accumulator Cache Soft Leak](#114-accumulator-cache-soft-leak)
+  * [11.4 Diagnostic Accumulator Cache Lifecycle](#114-diagnostic-accumulator-cache-lifecycle)
   * [11.5 Configuration Derivation Summary](#115-configuration-derivation-summary)
 * [12. Future Work](#12-future-work)
 
@@ -456,9 +456,12 @@ optional metadata plumbing around that existing expression:
 - `BloomFilterBuildCostAccumulator` can aggregate build-side
   `(buildWallNanos, bfBytes)` updates.
 
-These hooks are optional and default to absent. They are enabled only when the
-relevant runtime-feedback and instrumentation configuration is on and the
-`bfId` can be discovered from the probe-side subquery plan.
+These hooks are diagnostic-only and default to absent. They are enabled only
+when `spark.rapids.sql.cubf.diagnosticMetrics.enabled=true` and the `bfId` can
+be discovered from planner-emitted CuBF markers. If the diagnostic flag is off,
+or if no private CuBF marker/bfId is present, no diagnostic accumulator is
+registered and the probe path does not pay the per-batch reduction, device-to-host
+scalar copy, or accumulator update cost.
 
 Discovery walks the probe-side bloom filter subquery plan to find a
 planner-emitted execution node that carries the `bfId` linking build and probe.
@@ -498,12 +501,13 @@ GpuBloomFilterMightContain
 
 `BloomFilterBuildCostAccumulator.driverGetOrCreate` and
 `BloomFilterProbeAccumulator.driverGetOrCreate` keep driver-side static caches
-keyed by `bfId`. These caches are not cleaned up by the current implementation.
-In a long-running driver JVM, entries accumulate per unique `bfId`. Each entry is
-small, roughly 100 bytes plus map overhead, so this is not expected to block
-initial enablement. The growth is still unbounded; a future cleanup mechanism
-should evict stale entries when query or execution lifecycle boundaries make them
-unreachable.
+keyed by `(SQL execution id, bfId)`. Registered accumulator names include the
+execution id, for example `cubf_build_<executionId>_<bfId>` and
+`cubf_probe_<executionId>_<bfId>`, so repeated content-addressed `bfId` values
+across executions are distinguishable in Spark UI and event logs. A
+`CuBFDiagAccCleanupListener` removes the RAPIDS cache references for the
+completed execution on `SparkListenerSQLExecutionEnd`. Direct helper calls with
+no SQL execution id register fresh `no_sql` accumulators and do not cache them.
 
 Instrumentation must not change execution semantics:
 
@@ -1097,24 +1101,18 @@ For a single query with `K=3` at 1 MB each: 3 MB of additional driver heap,
 which is negligible. For 5 concurrent build execs with `K=3` at 8 MB each:
 `B=15`, requiring 120 MB of additional driver heap.
 
-### 11.4 Accumulator Cache Soft Leak
+### 11.4 Diagnostic Accumulator Cache Lifecycle
 
 **Risk.** `BloomFilterBuildCostAccumulator.cache` and
-`BloomFilterProbeAccumulator.cache` are static `ConcurrentHashMap` instances
-with no cleanup path. Each bloom filter id adds one entry to each cache. In
-long-running driver JVMs processing many queries, these maps grow without bound.
-Each entry holds a metadata accumulator object (two `Long` fields plus
-`AccumulatorV2` bookkeeping, string key, and map node overhead), not the bloom
-filter bytes themselves. Per-entry retained size is on the order of a few
-hundred bytes. Growth is slow relative to bloom filter payloads, but it is
-unbounded and should be cleaned up in long-lived sessions.
+`BloomFilterProbeAccumulator.cache` are static `ConcurrentHashMap` instances.
+If keyed only by `bfId`, repeated queries in a long-running driver could retain
+one accumulator object per distinct bloom filter id indefinitely.
 
-**Remedy.** No cleanup mechanism exists today. This is tracked as future work
-(Section 12, item 8). A listener-based cleanup keyed on query completion is the
-expected fix.
-The recommended cleanup hook is `SparkListenerSQLExecutionEnd`, which
-fires once per SQL execution and carries the `executionId` needed to
-identify related accumulators.
+**Lifecycle.** Diagnostic accumulator caches are keyed by `(SQL execution id,
+bfId)` and cleaned on `SparkListenerSQLExecutionEnd`. The cleanup removes only
+RAPIDS' static cache references for diagnostic build/probe accumulators. It does
+not touch the inline BF byte accumulator path, `BFRegistry`, or Spark's own
+completed accumulator/event-log history.
 
 ### 11.5 Configuration Derivation Summary
 
@@ -1162,8 +1160,6 @@ changing existing Spark OSS bloom filter behavior:
 6. Composite-key bloom filter support for multi-column join keys, including
    stable build/probe composite hashing, null semantics, type support, and
    marker/spec shape.
-7. Runtime feedback, selectivity gating, or cost-benefit policies.
-8. Accumulator cache cleanup for `BloomFilterBuildCostAccumulator` and
-   `BloomFilterProbeAccumulator` to bound memory in long-running driver JVMs.
-9. Additional profile enablement as Spark bloom filter support and shim coverage
+7. Additional selectivity gating or cost-benefit policies.
+8. Additional profile enablement as Spark bloom filter support and shim coverage
    evolve.

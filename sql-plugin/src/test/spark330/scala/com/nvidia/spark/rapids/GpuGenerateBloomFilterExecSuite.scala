@@ -44,37 +44,13 @@ package com.nvidia.spark.rapids
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 
 import com.nvidia.spark.rapids.BloomFilterTestHelpers._
-import org.scalatest.BeforeAndAfterAll
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.SparkPlan
 
 /** Tests multi-spec `GpuGenerateBloomFilterExec` driver-side behavior. */
 class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
-    with BeforeAndAfterAll {
-
-  @transient private var spark: SparkSession = _
-
-  override def beforeAll(): Unit = {
-    super.beforeAll()
-    spark = SparkSession.builder()
-      .master("local[1]")
-      .appName("GpuGenerateBloomFilterExecSuite")
-      .config("spark.ui.enabled", "false")
-      .getOrCreate()
-  }
-
-  override def afterAll(): Unit = {
-    try {
-      if (spark != null) {
-        spark.stop()
-        spark = null
-      }
-    } finally {
-      super.afterAll()
-    }
-  }
+    with CuBFLocalSparkSuite {
 
   private def stubChild(): SparkPlan = spark.range(0).queryExecution.executedPlan
 
@@ -254,6 +230,38 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       s"merge must sum both components, got ${driverProbe.value}")
     assert(partitionProbe.value == ((25L, 20L)),
       s"merge must not mutate the source accumulator, got ${partitionProbe.value}")
+  }
+
+  test("build diagnostic updaters require diagnostic config and non-empty bfIds") {
+    BloomFilterBuildCostAccumulator.clearAllForTests()
+    try {
+      withSqlConf(RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.key -> "false") {
+        withSqlExecutionId(301L) {
+          val updaters = InlineBFBuildReplacement()
+            .resolveBuildCostUpdaters(Seq("bf-diag-off"))
+          assert(updaters.isEmpty)
+          assert(BloomFilterBuildCostAccumulator.cacheSizeForTests === 0)
+        }
+      }
+
+      withSqlConf(RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.key -> "true") {
+        withSqlExecutionId(302L) {
+          val updaters = InlineBFBuildReplacement()
+            .resolveBuildCostUpdaters(Seq("", "cubf-", "bf-diag-on"))
+          assert(updaters.keySet === Set("bf-diag-on"))
+          assert(BloomFilterBuildCostAccumulator.containsForTests(302L, "bf-diag-on"))
+          assert(!BloomFilterBuildCostAccumulator.containsForTests(302L, ""))
+          assert(!BloomFilterBuildCostAccumulator.containsForTests(302L, "cubf-"))
+        }
+        withSqlExecutionId(303L) {
+          val updaters = InlineBFBuildReplacement().resolveBuildCostUpdaters(Seq.empty)
+          assert(updaters.isEmpty)
+          assert(!BloomFilterBuildCostAccumulator.containsForTests(303L, ""))
+        }
+      }
+    } finally {
+      BloomFilterBuildCostAccumulator.clearAllForTests()
+    }
   }
 
   test("resolveEffectiveMaxFilterBytes is fail-safe on missing capability helper") {

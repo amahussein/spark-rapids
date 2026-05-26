@@ -18,9 +18,11 @@ package com.nvidia.spark.rapids
 
 import java.util.concurrent.ConcurrentHashMap
 
+import com.nvidia.spark.rapids.BloomFilterLongPairAccumulator.CuBFDiagAccCacheKey
+
 import org.apache.spark.SparkContext
 
-/** Driver-side probe accumulator keyed by bfId. */
+/** Driver-side probe diagnostic accumulator keyed by SQL execution id and bfId. */
 class BloomFilterProbeAccumulator
     extends BloomFilterLongPairAccumulator
     with BloomFilterPredicateUpdater {
@@ -32,10 +34,22 @@ class BloomFilterProbeAccumulator
 
 object BloomFilterProbeAccumulator {
 
-  private val cache = new ConcurrentHashMap[String, BloomFilterProbeAccumulator]()
+  private val cache =
+    new ConcurrentHashMap[CuBFDiagAccCacheKey, BloomFilterProbeAccumulator]()
 
-  /** Registers or returns the cached `cubf_probe_<bfId>` accumulator. */
+  /** Registers or returns the cached `cubf_probe_<executionId>_<bfId>` accumulator. */
   def driverGetOrCreate(sc: SparkContext, bfId: String): BloomFilterProbeAccumulator =
     BloomFilterLongPairAccumulator.getOrCreateCached(
       cache, sc, bfId, "cubf_probe", () => new BloomFilterProbeAccumulator)
+
+  def removeForExecution(executionId: Long): Int =
+    BloomFilterLongPairAccumulator.removeForExecution(cache, executionId)
+
+  private[rapids] def clearAllForTests(): Unit =
+    BloomFilterLongPairAccumulator.clearAllForTests(cache)
+
+  private[rapids] def cacheSizeForTests: Int = cache.size()
+
+  private[rapids] def containsForTests(executionId: Long, bfId: String): Boolean =
+    cache.containsKey(CuBFDiagAccCacheKey(executionId, bfId))
 }

@@ -50,10 +50,8 @@ import com.nvidia.spark.rapids._
 import com.nvidia.spark.rapids.jni.BloomFilter
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.rapids.aggregate.{CpuToGpuAggregateBufferConverter,
   CpuToGpuBloomFilterBufferConverter, GpuBloomFilterAggregate,
   GpuToCpuAggregateBufferConverter, GpuToCpuBloomFilterBufferConverter}
@@ -71,7 +69,8 @@ object BloomFilterShims extends Logging {
           ("rhs", TypeSig.LONG + TypeSig.NULL, TypeSig.LONG + TypeSig.NULL)),
         (a, conf, p, r) => new BinaryExprMeta[BloomFilterMightContain](a, conf, p, r) {
           override def convertToGpu(lhs: Expression, rhs: Expression): GpuExpression = {
-            val (bfId, probeUpdater) = resolveProbeWiring(a.bloomFilterExpression)
+            val (bfId, probeUpdater) =
+              CuBFProbeDiagWiring.resolveProbeWiring(a.bloomFilterExpression)
             GpuBloomFilterMightContain(lhs, rhs, bfId, probeUpdater)
           }
         }),
@@ -120,18 +119,4 @@ object BloomFilterShims extends Logging {
     ).map(r => (r.getClassFor.asSubclass(classOf[Expression]), r)).toMap
   }
 
-  private def resolveProbeWiring(
-      bloomFilterExpression: Expression
-  ): (Option[String], Option[BloomFilterPredicateUpdater]) = {
-    if (!CuBFFeedbackFlags.isEnabled(SQLConf.get)) {
-      (None, None)
-    } else {
-      val bfIdOpt = CuBFPlanInspector.extractBfId(bloomFilterExpression)
-      val updaterOpt = for {
-        bfId <- bfIdOpt
-        spark <- SparkSession.getActiveSession
-      } yield BloomFilterProbeAccumulator.driverGetOrCreate(spark.sparkContext, bfId)
-      (bfIdOpt, updaterOpt)
-    }
-  }
 }

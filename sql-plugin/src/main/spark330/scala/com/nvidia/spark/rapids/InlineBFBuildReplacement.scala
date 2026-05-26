@@ -92,15 +92,17 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
     }
   }
 
-  /** Creates bfId-keyed build-cost updaters when CuBF feedback is enabled. */
-  private def resolveBuildCostUpdaters(
+  /** Creates diagnostic build-cost updaters when cuBF markers carry bfIds. */
+  private[rapids] def resolveBuildCostUpdaters(
       bfIds: Seq[String]): Map[String, BloomFilterBuildCostUpdater] = {
-    if (bfIds.isEmpty || !CuBFFeedbackFlags.isEnabled(SQLConf.get)) {
+    val usableBfIds = bfIds.filter(BloomFilterLongPairAccumulator.isUsableBfId)
+    if (usableBfIds.isEmpty ||
+        !RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.get(SQLConf.get)) {
       return Map.empty
     }
     SparkSession.getActiveSession match {
       case Some(spark) =>
-        bfIds.map { bfId =>
+        usableBfIds.map { bfId =>
           val acc = BloomFilterBuildCostAccumulator
             .driverGetOrCreate(spark.sparkContext, bfId)
           bfId -> (acc: BloomFilterBuildCostUpdater)

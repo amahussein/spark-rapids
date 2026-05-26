@@ -544,6 +544,7 @@ class RapidsDriverPlugin extends DriverPlugin with Logging {
     }
 
     FileCacheLocalityManager.init(sc)
+    sc.addSparkListener(new CuBFDiagAccCleanupListener)
 
     logDebug("Loading extra driver plugins: " +
       s"${extraDriverPlugins.map(_.getClass.getName).mkString(",")}")

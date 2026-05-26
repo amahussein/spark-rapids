@@ -48,8 +48,13 @@ package com.nvidia.spark.rapids.shims
 
 import scala.util.control.NonFatal
 
+import com.nvidia.spark.rapids.{BloomFilterLongPairAccumulator, BloomFilterPredicateUpdater,
+  BloomFilterProbeAccumulator, RapidsConf}
+
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.{BaseSubqueryExec, ExecSubqueryExpression, SparkPlan}
+import org.apache.spark.sql.internal.SQLConf
 
 // Plan-walking helpers used by BloomFilterShims to extract the optional bfId
 // from a probe expression's subquery plan.
@@ -119,6 +124,25 @@ object CuBFPlanInspector {
           case NonFatal(_) => None
         }
       }
+    }
+  }
+}
+
+private[shims] object CuBFProbeDiagWiring {
+
+  def resolveProbeWiring(
+      bloomFilterExpression: Expression
+  ): (Option[String], Option[BloomFilterPredicateUpdater]) = {
+    if (!RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.get(SQLConf.get)) {
+      (None, None)
+    } else {
+      val bfIdOpt = CuBFPlanInspector.extractBfId(bloomFilterExpression)
+        .filter(BloomFilterLongPairAccumulator.isUsableBfId)
+      val updaterOpt = for {
+        bfId <- bfIdOpt
+        spark <- SparkSession.getActiveSession
+      } yield BloomFilterProbeAccumulator.driverGetOrCreate(spark.sparkContext, bfId)
+      (bfIdOpt, updaterOpt)
     }
   }
 }

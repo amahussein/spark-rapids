@@ -889,6 +889,14 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
       .checkValues(Set("DEBUG", "MODERATE", "ESSENTIAL"))
       .createWithDefault("MODERATE")
 
+  val CUBF_DIAGNOSTIC_METRICS_ENABLED =
+    conf("spark.rapids.sql.cubf.diagnosticMetrics.enabled")
+      .doc("When enabled, wires optional cuBF build/probe diagnostic accumulators " +
+        "for planner-emitted cuBF markers. When disabled, or when no cuBF bfId is present, " +
+        "no cuBF diagnostic accumulators are registered.")
+      .booleanConf
+      .createWithDefault(false)
+
   val PROFILE_PATH = conf("spark.rapids.profile.pathPrefix")
     .doc("Enables profiling and specifies a URI path to use when writing profile data")
     .internal()

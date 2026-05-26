@@ -18,7 +18,10 @@ package com.nvidia.spark.rapids
 
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.util.Try
+
 import org.apache.spark.SparkContext
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.util.AccumulatorV2
 
 /** AccumulatorV2 base for per-bfId `(Long, Long)` CuBF metrics. */
@@ -61,17 +64,59 @@ abstract class BloomFilterLongPairAccumulator
 
 object BloomFilterLongPairAccumulator {
 
-  /** Registers or returns a cached named accumulator for `bfId`. */
+  private[rapids] case class CuBFDiagAccCacheKey(executionId: Long, bfId: String)
+
+  // Diagnostic accumulator keys must carry a real id payload, not just the cuBF prefix.
+  private[rapids] def isUsableBfId(bfId: String): Boolean =
+    bfId != null && bfId.nonEmpty && bfId != "cubf-"
+
+  /** Registers or returns a cached named accumulator for the active SQL execution and `bfId`. */
   def getOrCreateCached[A <: BloomFilterLongPairAccumulator](
-      cache: ConcurrentHashMap[String, A],
+      cache: ConcurrentHashMap[CuBFDiagAccCacheKey, A],
       sc: SparkContext,
       bfId: String,
       namePrefix: String,
       factory: () => A): A = {
-    cache.computeIfAbsent(bfId, _ => {
-      val acc = factory()
-      sc.register(acc, s"${namePrefix}_$bfId")
-      acc
-    })
+    sqlExecutionId(sc) match {
+      case Some(executionId) =>
+        val key = CuBFDiagAccCacheKey(executionId, bfId)
+        cache.computeIfAbsent(key, _ => register(sc, s"${namePrefix}_${executionId}_$bfId",
+          factory))
+      case None =>
+        register(sc, s"${namePrefix}_no_sql_$bfId", factory)
+    }
+  }
+
+  def removeForExecution[A <: BloomFilterLongPairAccumulator](
+      cache: ConcurrentHashMap[CuBFDiagAccCacheKey, A],
+      executionId: Long): Int = {
+    val keys = cache.keySet().iterator()
+    var removed = 0
+    while (keys.hasNext) {
+      val key = keys.next()
+      if (key.executionId == executionId && cache.remove(key) != null) {
+        removed += 1
+      }
+    }
+    removed
+  }
+
+  def clearAllForTests[A <: BloomFilterLongPairAccumulator](
+      cache: ConcurrentHashMap[CuBFDiagAccCacheKey, A]): Unit = {
+    cache.clear()
+  }
+
+  private def register[A <: BloomFilterLongPairAccumulator](
+      sc: SparkContext,
+      name: String,
+      factory: () => A): A = {
+    val acc = factory()
+    sc.register(acc, name)
+    acc
+  }
+
+  private def sqlExecutionId(sc: SparkContext): Option[Long] = {
+    Option(sc.getLocalProperty(SQLExecution.EXECUTION_ID_KEY))
+      .flatMap(id => Try(id.toLong).toOption)
   }
 }

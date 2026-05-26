@@ -62,12 +62,16 @@ package com.nvidia.spark.rapids.shims {
 
   import org.apache.spark.rdd.RDD
   import org.apache.spark.sql.catalyst.InternalRow
-  import org.apache.spark.sql.catalyst.expressions.Attribute
-  import org.apache.spark.sql.execution.{LeafExecNode, SparkPlan, UnaryExecNode}
+  import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal, NamedExpression}
+  import org.apache.spark.sql.execution.{LeafExecNode, SparkPlan, SubqueryExec,
+    UnaryExecNode}
+
+  import com.nvidia.spark.rapids.{BloomFilterProbeAccumulator, CuBFLocalSparkSuite, RapidsConf}
   import com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec
 
   /** Regression coverage for AQE-aware `findBfIdInPlan`. */
-  class CuBFPlanInspectorSuite extends AnyFunSuite {
+  class CuBFPlanInspectorSuite extends AnyFunSuite
+      with CuBFLocalSparkSuite {
 
     private case class FakeAdaptiveSparkPlanExec(inner: SparkPlan)
         extends LeafExecNode {
@@ -153,5 +157,44 @@ package com.nvidia.spark.rapids.shims {
       assert(CuBFPlanInspector.findBfIdInPlan(aqeWrapped).isEmpty,
         "absence of TryReadBFRegistryExec must yield None, not throw")
     }
+
+    test("probe diagnostic wiring requires a private marker and usable bfId") {
+      BloomFilterProbeAccumulator.clearAllForTests()
+      try {
+        withSqlConf(RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.key -> "true") {
+          withSqlExecutionId(401L) {
+            val (noMarkerBfId, noMarkerUpdater) =
+              CuBFProbeDiagWiring.resolveProbeWiring(Literal(1))
+            assert(noMarkerBfId.isEmpty)
+            assert(noMarkerUpdater.isEmpty)
+
+            Seq("", "cubf-").foreach { bfId =>
+              val (invalidBfId, invalidUpdater) =
+                CuBFProbeDiagWiring.resolveProbeWiring(probeExpression(bfId))
+              assert(invalidBfId.isEmpty)
+              assert(invalidUpdater.isEmpty)
+            }
+            assert(BloomFilterProbeAccumulator.cacheSizeForTests === 0)
+          }
+
+          withSqlExecutionId(402L) {
+            val (validBfId, validUpdater) =
+              CuBFProbeDiagWiring.resolveProbeWiring(probeExpression("cubf-probe-ok"))
+            assert(validBfId.contains("cubf-probe-ok"))
+            assert(validUpdater.isDefined)
+            assert(BloomFilterProbeAccumulator.containsForTests(402L, "cubf-probe-ok"))
+          }
+        }
+      } finally {
+        BloomFilterProbeAccumulator.clearAllForTests()
+      }
+    }
+
+    private def probeExpression(bfId: String): org.apache.spark.sql.execution.ScalarSubquery = {
+      org.apache.spark.sql.execution.ScalarSubquery(
+        SubqueryExec("probe", TryReadBFRegistryExec(bfId)),
+        NamedExpression.newExprId)
+    }
+
   }
 }
