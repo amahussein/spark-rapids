@@ -54,7 +54,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
 
   private def stubChild(): SparkPlan = spark.range(0).queryExecution.executedPlan
 
-  test("multi_spec_registers_N_accumulators") {
+  test("multi-spec registers N accumulators") {
     val specs = Seq(
       BFSpec("bf-A", 0, 5, 100000L),
       BFSpec("bf-B", 1, 5, 100000L),
@@ -78,7 +78,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     }
   }
 
-  test("single_spec_registers_one_accumulator") {
+  test("single-spec registers one accumulator") {
     val spec = BFSpec("single", 0, 7, 524288L)
     val exec = GpuGenerateBloomFilterExec(
       specs = Seq(spec),
@@ -93,7 +93,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   Seq(1, 2).foreach { version =>
-    test(s"multi_spec_produces_N_bfs_no_cross_contamination [v$version]") {
+    test(s"multi-spec produces N BFs with no cross-contamination [v$version]") {
       val specs = Seq(
         BFSpec("bf-A", 0, 1, 64),
         BFSpec("bf-B", 1, 1, 64))
@@ -119,7 +119,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     }
   }
 
-  test("canonical_is_always_transparent") {
+  test("canonical is always transparent") {
     val child = stubChild()
     val execSingle = GpuGenerateBloomFilterExec(
       specs = Seq(BFSpec("single", 0, 5, 100000L)),
@@ -143,7 +143,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
         "canonicalize equally (ReuseExchange precondition)")
   }
 
-  test("accumulator_markSkipped_publishes_sentinel_value") {
+  test("accumulator markSkipped publishes sentinel value") {
     val acc = new BloomFilterBuildAccumulator()
     assert(acc.isZero)
     acc.markSkipped()
@@ -153,7 +153,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   Seq(1, 2).foreach { version =>
-    test(s"accumulator_merge_sentinel_wins_over_real_bf [v$version]") {
+    test(s"accumulator merge sentinel wins over real BF [v$version]") {
       val sentinel = BloomFilterBuildAccumulator.SkipSentinel
       val realBytes = makeBfBytes(version = version, dataLastByte = 0x42)
 
@@ -171,7 +171,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     }
   }
 
-  test("accumulator_merge_sentinel_x_sentinel_yields_sentinel") {
+  test("accumulator merge sentinel with sentinel yields sentinel") {
     val a = new BloomFilterBuildAccumulator()
     a.markSkipped()
     a.add(Array[Byte](0, 0, 0, 0)) // post-serialization content form
@@ -179,7 +179,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   Seq(1, 2).foreach { version =>
-    test(s"accumulator_merge_real_x_real_does_not_canonicalize_to_sentinel [v$version]") {
+    test(s"accumulator merge real with real does not canonicalize to sentinel [v$version]") {
       val a = new BloomFilterBuildAccumulator()
       a.add(makeBfBytes(version = version, dataLastByte = 0x0F))
       a.add(makeBfBytes(version = version, dataLastByte = 0xF0))
@@ -272,7 +272,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
         "the helper must fail closed to the V1 cap.")
   }
 
-  test("requires_nonEmpty_specs") {
+  test("requires nonEmpty specs") {
     val ex = intercept[IllegalArgumentException] {
       GpuGenerateBloomFilterExec(
         specs = Seq.empty,
@@ -324,12 +324,25 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("recordBuildUpdate is a no-op when buildCostUpdaters is empty") {
-    val exec = GpuGenerateBloomFilterExec(
+    // A spy wired to a sibling exec must not see invocations from the
+    // empty-map exec. Catches Map.get -> Map.apply refactors and any
+    // future cross-instance side-effect leak.
+    val spy = new CountingBuildUpdater
+    val sibling = GpuGenerateBloomFilterExec(
+      specs = Seq(BFSpec("cubf-active", 0, 5, 100000L)),
+      bfVersion = 1, seed = 0, xxHashSeed = 42L,
+      child = stubChild(),
+      buildCostUpdaters = Map("cubf-active" -> spy))
+    val target = GpuGenerateBloomFilterExec(
       specs = Seq(BFSpec("cubf-no-updater", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild())
-    exec.recordBuildUpdate("cubf-no-updater", 1000000L, 8192L)
-    succeed
+    target.recordBuildUpdate("cubf-no-updater", 1000000L, 8192L)
+    assert(spy.invocationCount === 0,
+      "empty buildCostUpdaters path must not fire any other exec's updater")
+    // Sanity check: the spy fires for its own owner.
+    sibling.recordBuildUpdate("cubf-active", 1L, 1L)
+    assert(spy.invocationCount === 1)
   }
 
   test("recordBuildUpdate is a no-op when bfId is not in the map") {

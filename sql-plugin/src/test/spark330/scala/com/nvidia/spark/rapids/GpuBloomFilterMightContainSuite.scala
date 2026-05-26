@@ -81,9 +81,18 @@ class GpuBloomFilterMightContainSuite extends AnyFunSuite {
   }
 
   test("recordBatchUpdate is a no-op when probeUpdater is None") {
-    val expr = newExpr(bfId = Some("cubf-no-updater"), updater = None)
-    expr.recordBatchUpdate(1000000L, 700000L)
-    succeed
+    // A spy wired to a sibling expression must not see invocations from the
+    // None-updater expression. Catches .foreach -> .get refactors and any
+    // future cross-instance side-effect leak.
+    val spy = new CountingPredicateUpdater
+    val sibling = newExpr(bfId = Some("cubf-active"), updater = Some(spy))
+    val target = newExpr(bfId = Some("cubf-no-updater"), updater = None)
+    target.recordBatchUpdate(1000000L, 700000L)
+    assert(spy.invocationCount === 0,
+      "None-updater path must not fire any other expression's updater")
+    // Sanity check: the spy fires for its own owner.
+    sibling.recordBatchUpdate(1L, 1L)
+    assert(spy.invocationCount === 1)
   }
 
   test("canonicalized drops bfId so distinct instances compare equal") {

@@ -88,7 +88,7 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
     }
   }
 
-  test("accumulator_merge_v2_preserves_seed_header_field") {
+  test("accumulator merge V2 preserves seed header field") {
     val left  = makeBfBytes(version = 2, seed = 0xDEADBEEF, dataLastByte = 0x0F)
     val right = makeBfBytes(version = 2, seed = 0xDEADBEEF, dataLastByte = 0xF0)
     val acc = new BloomFilterBuildAccumulator()
@@ -134,7 +134,7 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
     assert(replacement != null)
   }
 
-  test("reflects_multi_spec_field") {
+  test("reflects multi-spec field") {
     val fake: FakeMultiSpecInlineExec = FakeMultiSpecInlineExec(
       Seq(FakeSpec("bf-A", 0, 5, 100000L),
         FakeSpec("bf-B", 1, 5, 100000L)),
@@ -159,7 +159,7 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
       "reflection failure must surface as an exception, not silently succeed")
   }
 
-  test("legacy_fallback_tolerates_old_single_spec") {
+  test("legacy fallback tolerates old single-spec") {
     val legacy: FakeLegacyInlineExec = FakeLegacyInlineExec(
       bfId = "legacy-single",
       keyColumnIndex = 3,
