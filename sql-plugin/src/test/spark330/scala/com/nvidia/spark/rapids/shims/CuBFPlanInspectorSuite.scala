@@ -63,7 +63,7 @@ package com.nvidia.spark.rapids.shims {
   import org.apache.spark.rdd.RDD
   import org.apache.spark.sql.catalyst.InternalRow
   import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal, NamedExpression}
-  import org.apache.spark.sql.execution.{LeafExecNode, SparkPlan, SubqueryExec,
+  import org.apache.spark.sql.execution.{BinaryExecNode, LeafExecNode, SparkPlan, SubqueryExec,
     UnaryExecNode}
 
   import com.nvidia.spark.rapids.{BloomFilterProbeAccumulator, CuBFLocalSparkSuite, RapidsConf}
@@ -101,6 +101,17 @@ package com.nvidia.spark.rapids.shims {
         throw new UnsupportedOperationException("test stub")
       override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
         copy(child = newChild)
+    }
+
+    // Models the invalid single-subquery shape with two registry reads.
+    private case class PairExec(left: SparkPlan, right: SparkPlan) extends BinaryExecNode {
+      override def output: Seq[Attribute] = Seq.empty
+      override protected def doExecute(): RDD[InternalRow] =
+        throw new UnsupportedOperationException("test stub")
+      override protected def withNewChildrenInternal(
+          newLeft: SparkPlan,
+          newRight: SparkPlan): SparkPlan =
+        copy(left = newLeft, right = newRight)
     }
 
     test("tryAqePlanFields: returns Seq.empty for non-AQE plans") {
@@ -156,6 +167,16 @@ package com.nvidia.spark.rapids.shims {
       val aqeWrapped = FakeAdaptiveSparkPlanExec(plain)
       assert(CuBFPlanInspector.findBfIdInPlan(aqeWrapped).isEmpty,
         "absence of TryReadBFRegistryExec must yield None, not throw")
+    }
+
+    test("findBfIdInPlan: asserts on multiple registry reads in one subquery") {
+      val left = TryReadBFRegistryExec(bfId = "cubf-left")
+      val right = TryReadBFRegistryExec(bfId = "cubf-right")
+      val err = intercept[AssertionError] {
+        CuBFPlanInspector.findBfIdInPlan(PairExec(left, right))
+      }
+      assert(err.getMessage.contains("at most one cuBF registry read"),
+        s"unexpected assertion message: ${err.getMessage}")
     }
 
     test("probe diagnostic wiring requires a private marker and usable bfId") {

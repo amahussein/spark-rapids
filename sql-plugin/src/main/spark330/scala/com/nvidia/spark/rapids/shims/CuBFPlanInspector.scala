@@ -46,6 +46,7 @@
 spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids.shims
 
+import scala.collection.mutable
 import scala.util.control.NonFatal
 
 import com.nvidia.spark.rapids.{BloomFilterLongPairAccumulator, BloomFilterPredicateUpdater,
@@ -77,30 +78,41 @@ object CuBFPlanInspector {
     found
   }
 
+  /**
+   * Contract: `CuBloomFilterPostDPPRule` applies global candidate ranking and the per-query BF
+   * quota before injection. Each selected probe predicate gets its own `BloomFilterMightContain`
+   * scalar subquery with at most one `TryReadBFRegistryExec`. Multi-key fact-side stacking may put
+   * multiple probe predicates on one child, and older single-BF shapes may put just one, but a
+   * single scalar subquery must never contain multiple registry reads. If a future planner shape
+   * violates that invariant, diagnostic attribution is ambiguous.
+   */
   private[shims] def findBfIdInPlan(plan: SparkPlan): Option[String] = {
-    // Each BloomFilterMightContain scalar subquery has at most one planner BF registry read.
-    var found: Option[String] = None
+    val found = findAllBfIdsInPlan(plan)
+    assert(found.size <= 1,
+      s"Expected at most one cuBF registry read per BloomFilterMightContain subquery, " +
+        s"found ${found.size}: ${found.mkString(", ")}")
+    found.headOption
+  }
+
+  private def findAllBfIdsInPlan(plan: SparkPlan): Seq[String] = {
+    val found = mutable.ArrayBuffer.empty[String]
+    val visited = java.util.Collections.newSetFromMap(
+      new java.util.IdentityHashMap[SparkPlan, java.lang.Boolean]())
     def visit(p: SparkPlan): Unit = {
-      if (found.isEmpty && p != null) {
+      if (p != null && visited.add(p)) {
         if (p.getClass.getName == TryReadBFRegistryExecClassName) {
-          found = readBfId(p)
+          readBfId(p).foreach(found += _)
         }
-        if (found.isEmpty) {
-          p match {
-            case s: BaseSubqueryExec => visit(s.child)
-            case _ =>
-          }
+        p match {
+          case s: BaseSubqueryExec => visit(s.child)
+          case _ =>
         }
-        if (found.isEmpty) {
-          tryAqePlanFields(p).foreach(visit)
-        }
-        if (found.isEmpty) {
-          p.children.foreach(visit)
-        }
+        tryAqePlanFields(p).foreach(visit)
+        p.children.foreach(visit)
       }
     }
     visit(plan)
-    found
+    found.toSeq
   }
 
   private def readBfId(plan: SparkPlan): Option[String] = {
@@ -136,6 +148,8 @@ private[shims] object CuBFProbeDiagWiring {
     if (!RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.get(SQLConf.get)) {
       (None, None)
     } else {
+      // Diagnostic-only wiring: carry the planner bfId to GpuBloomFilterMightContain and
+      // attach a probe accumulator for Spark UI/event-log observability.
       val bfIdOpt = CuBFPlanInspector.extractBfId(bloomFilterExpression)
         .filter(BloomFilterLongPairAccumulator.isUsableBfId)
       val updaterOpt = for {

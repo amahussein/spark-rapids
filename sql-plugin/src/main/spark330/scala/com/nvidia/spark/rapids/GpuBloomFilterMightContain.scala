@@ -59,6 +59,16 @@ import org.apache.spark.sql.catalyst.trees.TreePattern.OUTER_REFERENCE
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+/**
+ * GPU replacement for Spark's `BloomFilterMightContain`.
+ *
+ * `bfId` and `probeUpdater` are optional cuBF diagnostic wiring, not predicate semantics. The
+ * private optimizer can wrap the bloom-filter subquery in `TryReadBFRegistryExec`; when
+ * `spark.rapids.sql.cubf.diagnosticMetrics.enabled` is true, `CuBFProbeDiagWiring` reads that
+ * marker and creates a driver-side `BloomFilterProbeAccumulator` consumed through Spark
+ * accumulator UI/event logs. Without that marker, both fields remain `None` and this expression
+ * behaves like the standard OSS replacement.
+ */
 case class GpuBloomFilterMightContain(
     bloomFilterExpression: Expression,
     valueExpression: Expression,
