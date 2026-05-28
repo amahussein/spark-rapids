@@ -57,7 +57,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.{BaseSubqueryExec, ExecSubqueryExpression, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 
-// Plan-walking helpers used by BloomFilterShims to extract the optional bfId
+// Diagnostic-metrics helpers used by BloomFilterShims to extract the optional bfId
 // from a probe expression's subquery plan.
 object CuBFPlanInspector {
 
