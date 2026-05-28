@@ -41,6 +41,7 @@
 spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids
 
+import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
 import org.scalatest.{BeforeAndAfterAll, Suite}
 
 import org.apache.spark.sql.SparkSession
@@ -94,6 +95,15 @@ trait CuBFLocalSparkSuite extends BeforeAndAfterAll { this: Suite =>
         case (key, Some(value)) => spark.conf.set(key, value)
         case (key, None) => spark.conf.unset(key)
       }
+    }
+  }
+
+  protected def withClearedDiagMetricCaches[T](body: => T): T = {
+    CuBFDiagPairMetric.clearAllForTests()
+    try {
+      body
+    } finally {
+      CuBFDiagPairMetric.clearAllForTests()
     }
   }
 }

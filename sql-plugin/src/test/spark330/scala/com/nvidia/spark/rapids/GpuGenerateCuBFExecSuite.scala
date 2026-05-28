@@ -56,55 +56,57 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
 
   private def stubChild(): SparkPlan = spark.range(0).queryExecution.executedPlan
 
-  test("multi-spec registers N accumulators") {
-    val specs = Seq(
-      CuBFSpec("bf-A", 0, 5, 100000L),
-      CuBFSpec("bf-B", 1, 5, 100000L),
-      CuBFSpec("bf-C", 2, 5, 100000L))
-    val exec = GpuGenerateCuBFExec(
+  private def newExec(
+      specs: Seq[CuBFSpec],
+      buildCostUpdaters: Map[String, CuBFDiagPairMetric] = Map.empty,
+      bfVersion: Int = 1,
+      child: SparkPlan = stubChild()): GpuGenerateCuBFExec =
+    GpuGenerateCuBFExec(
       specs = specs,
-      bfVersion = 1,
+      bfVersion = bfVersion,
       seed = 0,
       xxHashSeed = 42L,
-      child = stubChild())
-    val accs = exec.accumulators
-    assert(accs.size == 3,
-      s"expected 3 accumulators, got ${accs.size}")
-    assert(accs.keySet == Set("bf-A", "bf-B", "bf-C"),
-      s"unexpected bfId set: ${accs.keySet}")
-    specs.foreach { spec =>
-      val acc = accs(spec.bfId)
-      assert(acc.name.contains(s"cuBF-${spec.bfId}"),
-        s"accumulator for ${spec.bfId} has name ${acc.name}, " +
-          s"expected Some(cuBF-${spec.bfId})")
-    }
-  }
+      child = child,
+      buildCostUpdaters = buildCostUpdaters)
 
-  test("single-spec registers one accumulator") {
-    val spec = CuBFSpec("single", 0, 7, 524288L)
-    val exec = GpuGenerateCuBFExec(
-      specs = Seq(spec),
-      bfVersion = 1,
-      seed = 0,
-      xxHashSeed = 42L,
-      child = stubChild())
-    val accs = exec.accumulators
-    assert(accs.size == 1)
-    assert(accs.keySet == Set("single"))
-    assert(accs("single").name.contains("cuBF-single"))
+  private def bfSpec(
+      id: String,
+      keyColumnIndex: Int = 0,
+      numHashes: Int = 5,
+      bits: Long = 100000L): CuBFSpec =
+    CuBFSpec(id, keyColumnIndex = keyColumnIndex, numHashes = numHashes, numBits = bits)
+
+  Seq(
+    "multi-spec registers 3 accumulators" ->
+      Seq(
+        bfSpec("bf-A", keyColumnIndex = 0),
+        bfSpec("bf-B", keyColumnIndex = 1),
+        bfSpec("bf-C", keyColumnIndex = 2)),
+    "single-spec registers one accumulator" ->
+      Seq(bfSpec("single", numHashes = 7, bits = 524288L))
+  ).foreach { case (testName, specs) =>
+    test(testName) {
+      val exec = newExec(specs)
+      val accs = exec.accumulators
+      assert(accs.size == specs.size,
+        s"expected ${specs.size} accumulators, got ${accs.size}")
+      assert(accs.keySet == specs.map(_.bfId).toSet,
+        s"unexpected bfId set: ${accs.keySet}")
+      specs.foreach { spec =>
+        val acc = accs(spec.bfId)
+        assert(acc.name.contains(s"cuBF-${spec.bfId}"),
+          s"accumulator for ${spec.bfId} has name ${acc.name}, " +
+            s"expected Some(cuBF-${spec.bfId})")
+      }
+    }
   }
 
   Seq(1, 2).foreach { version =>
     test(s"multi-spec produces N BFs with no cross-contamination [v$version]") {
       val specs = Seq(
-        CuBFSpec("bf-A", 0, 1, 64),
-        CuBFSpec("bf-B", 1, 1, 64))
-      val exec = GpuGenerateCuBFExec(
-        specs = specs,
-        bfVersion = version,
-        seed = 0,
-        xxHashSeed = 42L,
-        child = stubChild())
+        bfSpec("bf-A", keyColumnIndex = 0, numHashes = 1, bits = 64),
+        bfSpec("bf-B", keyColumnIndex = 1, numHashes = 1, bits = 64))
+      val exec = newExec(specs, bfVersion = version)
       val accs = exec.accumulators
       accs("bf-A").add(makeBfBytes(version = version, dataLastByte = 0x0F))
       accs("bf-A").add(makeBfBytes(version = version, dataLastByte = 0xF0))
@@ -123,23 +125,16 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
 
   test("canonical is always transparent") {
     val child = stubChild()
-    val execSingle = GpuGenerateCuBFExec(
-      specs = Seq(CuBFSpec("single", 0, 5, 100000L)),
-      bfVersion = 1, seed = 0, xxHashSeed = 42L, child = child)
-    val execMulti = GpuGenerateCuBFExec(
-      specs = Seq(
-        CuBFSpec("bf-A", 0, 5, 100000L),
-        CuBFSpec("bf-B", 1, 5, 100000L)),
-      bfVersion = 1, seed = 0, xxHashSeed = 42L, child = child)
+    val specs = Seq(
+      bfSpec("bf-A", keyColumnIndex = 0),
+      bfSpec("bf-B", keyColumnIndex = 1))
+    val execSingle = newExec(Seq(bfSpec("single")), child = child)
+    val execMulti = newExec(specs, child = child)
     assert(execSingle.canonicalized == child.canonicalized,
       "single-spec GpuGenerateCuBFExec must be transparent")
     assert(execMulti.canonicalized == child.canonicalized,
       "multi-spec GpuGenerateCuBFExec must be transparent")
-    val execMulti2 = GpuGenerateCuBFExec(
-      specs = Seq(
-        CuBFSpec("bf-A", 0, 5, 100000L),
-        CuBFSpec("bf-B", 1, 5, 100000L)),
-      bfVersion = 1, seed = 0, xxHashSeed = 42L, child = child)
+    val execMulti2 = newExec(specs, child = child)
     assert(execMulti.canonicalized == execMulti2.canonicalized,
       "sibling multi-spec wrappers with identical specs must " +
         "canonicalize equally (ReuseExchange precondition)")
@@ -154,40 +149,45 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
       "markSkipped must leave the sentinel identity in `value`")
   }
 
-  Seq(1, 2).foreach { version =>
-    test(s"accumulator merge sentinel wins over real BF [v$version]") {
-      val sentinel = CuBFBuildResultAccumulator.SkipSentinel
-      val realBytes = makeBfBytes(version = version, dataLastByte = 0x42)
-
-      val a1 = new CuBFBuildResultAccumulator()
-      a1.add(sentinel.clone())
-      a1.add(realBytes)
-      assert(a1.value eq sentinel,
-        "sentinel-then-real must canonicalize to the sentinel identity")
-
-      val a2 = new CuBFBuildResultAccumulator()
-      a2.add(realBytes)
-      a2.add(sentinel.clone())
-      assert(a2.value eq sentinel,
-        "real-then-sentinel must end on the sentinel identity")
+  private def testSentinelMerge(
+      label: String,
+      versions: Seq[Int] = Seq(1, 2))(
+      append: (CuBFBuildResultAccumulator, Int) => Unit): Unit = {
+    versions.foreach { version =>
+      val suffix = if (versions.size > 1) s" [v$version]" else ""
+      test(s"accumulator merge $label$suffix") {
+        val acc = new CuBFBuildResultAccumulator()
+        append(acc, version)
+        assert(acc.value eq CuBFBuildResultAccumulator.SkipSentinel,
+          "merge must canonicalize to the sentinel identity")
+      }
     }
   }
 
-  test("accumulator merge sentinel with sentinel yields sentinel") {
-    val a = new CuBFBuildResultAccumulator()
-    a.markSkipped()
-    a.add(Array[Byte](0, 0, 0, 0)) // post-serialization content form
-    assert(a.value eq CuBFBuildResultAccumulator.SkipSentinel)
+  testSentinelMerge("sentinel with serialized sentinel yields sentinel", Seq(1)) {
+    (acc, _) =>
+      acc.markSkipped()
+      acc.add(Array[Byte](0, 0, 0, 0))
+  }
+
+  testSentinelMerge("sentinel then real BF yields sentinel") { (acc, version) =>
+    acc.add(CuBFBuildResultAccumulator.SkipSentinel.clone())
+    acc.add(makeBfBytes(version = version, dataLastByte = 0x42))
+  }
+
+  testSentinelMerge("real BF then sentinel yields sentinel") { (acc, version) =>
+    acc.add(makeBfBytes(version = version, dataLastByte = 0x42))
+    acc.add(CuBFBuildResultAccumulator.SkipSentinel.clone())
   }
 
   Seq(1, 2).foreach { version =>
     test(s"accumulator merge real with real does not canonicalize to sentinel [v$version]") {
-      val a = new CuBFBuildResultAccumulator()
-      a.add(makeBfBytes(version = version, dataLastByte = 0x0F))
-      a.add(makeBfBytes(version = version, dataLastByte = 0xF0))
-      assert(a.value ne CuBFBuildResultAccumulator.SkipSentinel,
+      val acc = new CuBFBuildResultAccumulator()
+      acc.add(makeBfBytes(version = version, dataLastByte = 0x0F))
+      acc.add(makeBfBytes(version = version, dataLastByte = 0xF0))
+      assert(acc.value ne CuBFBuildResultAccumulator.SkipSentinel,
         "two real BFs must not canonicalize to the sentinel")
-      assert((a.value(headerSize(version) + 7) & 0xFF) == 0xFF,
+      assert((acc.value(headerSize(version) + 7) & 0xFF) == 0xFF,
         "OR-merge expected 0xFF data")
     }
   }
@@ -225,8 +225,7 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
   }
 
   test("build diagnostic updaters require diagnostic config and non-empty bfIds") {
-    CuBFDiagPairMetric.clearAllForTests()
-    try {
+    withClearedDiagMetricCaches {
       withSqlConf(RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.key -> "false") {
         withSqlExecutionId(301L) {
           val updaters = InlineCuBFBuildReplacement()
@@ -251,8 +250,6 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
           assert(!CuBFDiagPairMetric.buildContains(303L, ""))
         }
       }
-    } finally {
-      CuBFDiagPairMetric.clearAllForTests()
     }
   }
 
@@ -266,10 +263,7 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
 
   test("requires nonEmpty specs") {
     val ex = intercept[IllegalArgumentException] {
-      GpuGenerateCuBFExec(
-        specs = Seq.empty,
-        bfVersion = 1, seed = 0, xxHashSeed = 42L,
-        child = stubChild())
+      newExec(Seq.empty)
     }
     assert(ex.getMessage.contains("at least one"),
       s"unexpected message: ${ex.getMessage}")
@@ -277,10 +271,8 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
 
   test("recordBuildUpdate records one pair per BF build") {
     val metric = new CuBFDiagPairMetric
-    val exec = GpuGenerateCuBFExec(
-      specs = Seq(CuBFSpec("cubf-r7-single", 0, 5, 100000L)),
-      bfVersion = 1, seed = 0, xxHashSeed = 42L,
-      child = stubChild(),
+    val exec = newExec(
+      Seq(bfSpec("cubf-r7-single")),
       buildCostUpdaters = Map("cubf-r7-single" -> metric))
     exec.recordBuildUpdate("cubf-r7-single", 12345678L, 4096L)
     assert(metric.value === ((12345678L, 4096L)),
@@ -291,13 +283,11 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
     val metricA = new CuBFDiagPairMetric
     val metricB = new CuBFDiagPairMetric
     val metricC = new CuBFDiagPairMetric
-    val exec = GpuGenerateCuBFExec(
-      specs = Seq(
-        CuBFSpec("cubf-r7-A", 0, 5, 100000L),
-        CuBFSpec("cubf-r7-B", 1, 5, 200000L),
-        CuBFSpec("cubf-r7-C", 2, 5, 300000L)),
-      bfVersion = 1, seed = 0, xxHashSeed = 42L,
-      child = stubChild(),
+    val exec = newExec(
+      Seq(
+        bfSpec("cubf-r7-A", keyColumnIndex = 0),
+        bfSpec("cubf-r7-B", keyColumnIndex = 1, bits = 200000L),
+        bfSpec("cubf-r7-C", keyColumnIndex = 2, bits = 300000L)),
       buildCostUpdaters = Map(
         "cubf-r7-A" -> metricA,
         "cubf-r7-B" -> metricB,
@@ -315,15 +305,10 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
     // empty-map exec. Catches Map.get -> Map.apply refactors and any
     // future cross-instance side-effect leak.
     val metric = new CuBFDiagPairMetric
-    val sibling = GpuGenerateCuBFExec(
-      specs = Seq(CuBFSpec("cubf-active", 0, 5, 100000L)),
-      bfVersion = 1, seed = 0, xxHashSeed = 42L,
-      child = stubChild(),
+    val sibling = newExec(
+      Seq(bfSpec("cubf-active")),
       buildCostUpdaters = Map("cubf-active" -> metric))
-    val target = GpuGenerateCuBFExec(
-      specs = Seq(CuBFSpec("cubf-no-updater", 0, 5, 100000L)),
-      bfVersion = 1, seed = 0, xxHashSeed = 42L,
-      child = stubChild())
+    val target = newExec(Seq(bfSpec("cubf-no-updater")))
     target.recordBuildUpdate("cubf-no-updater", 1000000L, 8192L)
     assert(metric.value === ((0L, 0L)),
       "empty buildCostUpdaters path must not fire any other exec's metric")
@@ -334,10 +319,8 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
 
   test("recordBuildUpdate is a no-op when bfId is not in the map") {
     val metric = new CuBFDiagPairMetric
-    val exec = GpuGenerateCuBFExec(
-      specs = Seq(CuBFSpec("cubf-known", 0, 5, 100000L)),
-      bfVersion = 1, seed = 0, xxHashSeed = 42L,
-      child = stubChild(),
+    val exec = newExec(
+      Seq(bfSpec("cubf-known")),
       buildCostUpdaters = Map("cubf-known" -> metric))
     exec.recordBuildUpdate("cubf-unknown", 1000L, 512L)
     assert(metric.value === ((0L, 0L)),
@@ -415,19 +398,17 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
     val metric1 = new CuBFDiagPairMetric
     val metric2 = new CuBFDiagPairMetric
     val specs = Seq(
-      CuBFSpec("bf-A", 0, 5, 100000L),
-      CuBFSpec("bf-B", 1, 5, 100000L))
-    val with1 = GpuGenerateCuBFExec(
-      specs = specs, bfVersion = 1, seed = 0, xxHashSeed = 42L,
-      child = child,
-      buildCostUpdaters = Map("bf-A" -> metric1, "bf-B" -> metric1))
-    val with2 = GpuGenerateCuBFExec(
-      specs = specs, bfVersion = 1, seed = 0, xxHashSeed = 42L,
-      child = child,
-      buildCostUpdaters = Map("bf-A" -> metric2, "bf-B" -> metric2))
-    val without = GpuGenerateCuBFExec(
-      specs = specs, bfVersion = 1, seed = 0, xxHashSeed = 42L,
+      bfSpec("bf-A", keyColumnIndex = 0),
+      bfSpec("bf-B", keyColumnIndex = 1))
+    val with1 = newExec(
+      specs,
+      buildCostUpdaters = Map("bf-A" -> metric1, "bf-B" -> metric1),
       child = child)
+    val with2 = newExec(
+      specs,
+      buildCostUpdaters = Map("bf-A" -> metric2, "bf-B" -> metric2),
+      child = child)
+    val without = newExec(specs, child = child)
     assert(with1.canonicalized == with2.canonicalized,
       "different buildCostUpdaters must canonicalize equal " +
         "for exchange reuse")

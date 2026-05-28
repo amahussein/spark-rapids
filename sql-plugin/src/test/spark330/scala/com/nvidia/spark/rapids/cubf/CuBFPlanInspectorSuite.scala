@@ -180,8 +180,7 @@ package com.nvidia.spark.rapids.cubf {
     }
 
     test("probe diagnostic wiring requires a private marker and usable bfId") {
-      CuBFDiagPairMetric.clearAllForTests()
-      try {
+      withClearedDiagMetricCaches {
         withSqlConf(RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.key -> "true") {
           withSqlExecutionId(401L) {
             val (noMarkerBfId, noMarkerUpdater) =
@@ -206,8 +205,6 @@ package com.nvidia.spark.rapids.cubf {
             assert(CuBFDiagPairMetric.probeContains(402L, "cubf-probe-ok"))
           }
         }
-      } finally {
-        CuBFDiagPairMetric.clearAllForTests()
       }
     }
 
