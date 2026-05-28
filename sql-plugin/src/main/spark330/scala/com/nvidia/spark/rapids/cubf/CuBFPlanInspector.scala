@@ -16,20 +16,16 @@
 
 /*** spark-rapids-shim-json-lines
 {"spark": "330"}
-{"spark": "330db"}
 {"spark": "331"}
 {"spark": "332"}
-{"spark": "332db"}
 {"spark": "333"}
 {"spark": "334"}
 {"spark": "340"}
 {"spark": "341"}
-{"spark": "341db"}
 {"spark": "342"}
 {"spark": "343"}
 {"spark": "344"}
 {"spark": "350"}
-{"spark": "350db143"}
 {"spark": "351"}
 {"spark": "352"}
 {"spark": "353"}
@@ -39,18 +35,16 @@
 {"spark": "357"}
 {"spark": "358"}
 {"spark": "400"}
-{"spark": "400db173"}
 {"spark": "401"}
 {"spark": "402"}
 {"spark": "411"}
 spark-rapids-shim-json-lines ***/
-package com.nvidia.spark.rapids.shims
+package com.nvidia.spark.rapids.cubf
 
 import scala.collection.mutable
 import scala.util.control.NonFatal
 
 import com.nvidia.spark.rapids.RapidsConf
-import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.Expression
@@ -59,7 +53,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 // Diagnostic-metrics helpers used by BloomFilterShims to extract the optional bfId
 // from a probe expression's subquery plan.
-object CuBFPlanInspector {
+private[cubf] object CuBFPlanInspector {
 
   // Optional planner leaf that carries the bfId for metrics wiring.
   private val TryReadBFRegistryExecClassName =
@@ -68,7 +62,7 @@ object CuBFPlanInspector {
   private val AqePlanFields: Seq[String] =
     Seq("executedPlan", "currentPhysicalPlan", "initialPlan", "inputPlan")
 
-  private[shims] def extractBfId(expr: Expression): Option[String] = {
+  private[cubf] def extractBfId(expr: Expression): Option[String] = {
     var found: Option[String] = None
     expr.foreach {
       case e: ExecSubqueryExpression if found.isEmpty =>
@@ -86,7 +80,7 @@ object CuBFPlanInspector {
    * single scalar subquery must never contain multiple registry reads. If a future planner shape
    * violates that invariant, diagnostic attribution is ambiguous.
    */
-  private[shims] def findBfIdInPlan(plan: SparkPlan): Option[String] = {
+  private[cubf] def findBfIdInPlan(plan: SparkPlan): Option[String] = {
     val found = findAllBfIdsInPlan(plan)
     assert(found.size <= 1,
       s"Expected at most one cuBF registry read per BloomFilterMightContain subquery, " +
@@ -124,7 +118,7 @@ object CuBFPlanInspector {
     }
   }
 
-  private[shims] def tryAqePlanFields(p: SparkPlan): Seq[SparkPlan] = {
+  private[cubf] def tryAqePlanFields(p: SparkPlan): Seq[SparkPlan] = {
     if (!p.getClass.getName.contains("AdaptiveSparkPlanExec")) {
       Seq.empty
     } else {
@@ -140,7 +134,7 @@ object CuBFPlanInspector {
   }
 }
 
-private[shims] object CuBFProbeDiagWiring {
+private[rapids] object CuBFProbeDiagWiring {
 
   def resolveProbeWiring(
       bloomFilterExpression: Expression

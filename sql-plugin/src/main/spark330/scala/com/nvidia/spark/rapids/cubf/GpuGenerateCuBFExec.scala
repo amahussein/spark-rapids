@@ -39,11 +39,12 @@
 {"spark": "402"}
 {"spark": "411"}
 spark-rapids-shim-json-lines ***/
-package com.nvidia.spark.rapids
+package com.nvidia.spark.rapids.cubf
 
 import ai.rapids.cudf.{ColumnView, HostMemoryBuffer, Scalar}
+import com.nvidia.spark.rapids.{ExecChecks, ExecRule, GpuColumnVector, GpuExec, GpuOverrides}
+import com.nvidia.spark.rapids.{GpuSemaphore, SparkPlanMeta, TypeSig}
 import com.nvidia.spark.rapids.Arm.withResource
-import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
 import com.nvidia.spark.rapids.jni.{BloomFilter, Hash}
 import com.nvidia.spark.rapids.shims.ShimUnaryExecNode
 
@@ -54,10 +55,9 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.util.AccumulatorV2
 
 /** Build specification for one inline bloom filter. */
-case class BFSpec(
+case class CuBFSpec(
     bfId: String,
     keyColumnIndex: Int,
     numHashes: Int,
@@ -67,8 +67,8 @@ case class BFSpec(
  * Pass-through GPU operator that builds inline bloom filters while returning child batches
  * unchanged. Each partition publishes serialized partial BFs to driver accumulators by bfId.
  */
-case class GpuGenerateBloomFilterExec(
-    specs: Seq[BFSpec],
+case class GpuGenerateCuBFExec(
+    specs: Seq[CuBFSpec],
     bfVersion: Int,
     seed: Int,
     xxHashSeed: Long,
@@ -77,7 +77,7 @@ case class GpuGenerateBloomFilterExec(
     extends ShimUnaryExecNode with GpuExec with Logging {
 
   require(specs.nonEmpty,
-    "GpuGenerateBloomFilterExec requires at least one BFSpec")
+    "GpuGenerateCuBFExec requires at least one CuBFSpec")
 
   override def output: Seq[Attribute] = child.output
 
@@ -89,10 +89,10 @@ case class GpuGenerateBloomFilterExec(
   override protected def doCanonicalize(): SparkPlan = child.canonicalized
 
   /** Registers one build-result accumulator per `bfId` on first driver-side access. */
-  @transient lazy val accumulators: Map[String, BloomFilterBuildAccumulator] = {
+  @transient lazy val accumulators: Map[String, CuBFBuildResultAccumulator] = {
     val sc = sparkContext
     specs.map { spec =>
-      val acc = new BloomFilterBuildAccumulator()
+      val acc = new CuBFBuildResultAccumulator()
       sc.register(acc, s"cuBF-${spec.bfId}")
       (spec.bfId, acc)
     }.toMap
@@ -108,9 +108,9 @@ case class GpuGenerateBloomFilterExec(
     val updatersCapture = buildCostUpdaters
 
     // Mark oversized specs as skipped before tasks launch.
-    val effMaxBytes = GpuGenerateBloomFilterExec.resolveEffectiveMaxFilterBytes()
+    val effMaxBytes = GpuGenerateCuBFExec.resolveEffectiveMaxFilterBytes()
     val oversizedBfIds: Set[String] = specsCapture.flatMap { spec =>
-      val bfBytes = GpuGenerateBloomFilterExec.bytesForBits(spec.numBits)
+      val bfBytes = GpuGenerateCuBFExec.bytesForBits(spec.numBits)
       if (bfBytes > effMaxBytes) {
         logWarning(s"[CuBF-GpuGenerate] OVERSHOOT bfId=${spec.bfId} " +
           s"bfBytes=$bfBytes > max=$effMaxBytes -> SKIP")
@@ -164,7 +164,7 @@ case class GpuGenerateBloomFilterExec(
           var i = 0
           while (i < numSpecs) {
             if (!skipSpec(i)) {
-              accMap(specsCapture(i).bfId).add(BloomFilterBuildAccumulator.SkipSentinel)
+              accMap(specsCapture(i).bfId).add(CuBFBuildResultAccumulator.SkipSentinel)
             }
             i += 1
           }
@@ -227,7 +227,7 @@ case class GpuGenerateBloomFilterExec(
               } else {
                 val bf = bfs(i)
                 if (bf != null) {
-                  val bytes = GpuGenerateBloomFilterExec.scalarToHostBytes(bf)
+                  val bytes = GpuGenerateCuBFExec.scalarToHostBytes(bf)
                   // `bytes` is a fresh JVM byte array unrelated to any device buffer, and the
                   // accumulator copies the payload into its own heap state (cloning on first
                   // write or OR-merging into an existing buffer). Once `add` returns, releasing
@@ -258,7 +258,7 @@ case class GpuGenerateBloomFilterExec(
 
   override protected def doExecute(): RDD[InternalRow] = {
     throw new UnsupportedOperationException(
-      "GpuGenerateBloomFilterExec does not support row-based execution")
+      "GpuGenerateCuBFExec does not support row-based execution")
   }
 
   /** Records one metrics update for a finalized BF build. */
@@ -268,7 +268,7 @@ case class GpuGenerateBloomFilterExec(
   }
 }
 
-object GpuGenerateBloomFilterExec extends Logging {
+object GpuGenerateCuBFExec extends Logging {
 
   private val SparkVersionBFCapsClassName =
     "com.nvidia.spark.rapids.optimizer.cubloomfilter.SparkVersionBFCaps$"
@@ -314,115 +314,18 @@ object GpuGenerateBloomFilterExec extends Logging {
 }
 
 /** Registers the already-GPU inline BF build so GpuOverrides still converts its child. */
-object InlineBFBuildGpuOverride {
+object InlineCuBFBuildGpuOverride {
   val execRules: Map[Class[_ <: SparkPlan], ExecRule[_ <: SparkPlan]] = Seq(
-    GpuOverrides.exec[GpuGenerateBloomFilterExec](
+    GpuOverrides.exec[GpuGenerateCuBFExec](
       "Pass-through GPU operator that builds a bloom filter inline " +
         "with the join's build-side pipeline",
       ExecChecks(TypeSig.all, TypeSig.all),
       (exec, conf, parent, rule) =>
-        new SparkPlanMeta[GpuGenerateBloomFilterExec](exec, conf, parent, rule) {
+        new SparkPlanMeta[GpuGenerateCuBFExec](exec, conf, parent, rule) {
           override def tagPlanForGpu(): Unit = {}
           override def convertToGpu(): GpuExec =
             exec.copy(child = childPlans.head.convertIfNeeded())
         }
     ).invisible()
   ).map(r => (r.getClassFor.asSubclass(classOf[SparkPlan]), r)).toMap
-}
-
-/**
- * Accumulates partial bloom filters by OR-ing their serialized data bytes.
- *
- * A 4-byte all-zero value is the skip sentinel; once seen, the accumulator stays skipped.
- * Real bloom filters cannot collide because their serialized header starts with a non-zero version.
- *
- * Threading: a given instance is mutated by a single executor thread per task (Spark hands each
- * task a freshly deserialized copy), and driver-side merges of those copies are serialized by
- * Spark's accumulator-result handling, so `add`/`merge` do not need internal synchronization.
- */
-class BloomFilterBuildAccumulator extends AccumulatorV2[Array[Byte], Array[Byte]]
-    with Logging {
-
-  import BloomFilterBuildAccumulator.SkipSentinel
-
-  private var merged: Array[Byte] = _
-
-  override def isZero: Boolean = merged == null
-
-  override def copy(): AccumulatorV2[Array[Byte], Array[Byte]] = {
-    val acc = new BloomFilterBuildAccumulator()
-    if (merged != null) {
-      // Preserve sentinel identity for driver-local fast checks.
-      acc.merged = if (merged eq SkipSentinel) SkipSentinel else merged.clone()
-    }
-    acc
-  }
-
-  override def reset(): Unit = {
-    merged = null
-  }
-
-  /** Publishes the skip sentinel into this accumulator. */
-  def markSkipped(): Unit = {
-    merged = SkipSentinel
-  }
-
-  override def add(partial: Array[Byte]): Unit = {
-    // Null partials are ignored; skip is represented by SkipSentinel.
-    if (partial == null) {
-      return
-    }
-    if (isSkipShape(partial) || isSkipShape(merged)) {
-      merged = SkipSentinel
-    } else if (merged == null) {
-      merged = partial.clone()
-    } else {
-      mergeBytes(partial)
-    }
-  }
-
-  override def merge(other: AccumulatorV2[Array[Byte], Array[Byte]]): Unit = {
-    val otherAcc = other.asInstanceOf[BloomFilterBuildAccumulator]
-    if (otherAcc.merged != null) {
-      add(otherAcc.merged)
-    }
-  }
-
-  override def value: Array[Byte] = merged
-
-  /** Checks the skip sentinel by identity or serialized content. */
-  private def isSkipShape(bytes: Array[Byte]): Boolean = {
-    if (bytes == null) false
-    else if (bytes eq SkipSentinel) true
-    else bytes.length == 4 &&
-      bytes(0) == 0.toByte && bytes(1) == 0.toByte &&
-      bytes(2) == 0.toByte && bytes(3) == 0.toByte
-  }
-
-  /**
-   * OR `other` into `merged`, skipping the serialized BF header.
-   * Length mismatch means inconsistent BF specs, so fail closed with SkipSentinel.
-   */
-  private def mergeBytes(other: Array[Byte]): Unit = {
-    if (merged.length != other.length) {
-      logWarning(s"[CuBF-Accumulator] BF size mismatch: ${merged.length} vs " +
-        s"${other.length} -> SKIP")
-      merged = SkipSentinel
-      return
-    }
-    // Read version to choose header length.
-    val version = ((merged(0) & 0xFF) << 24) | ((merged(1) & 0xFF) << 16) |
-      ((merged(2) & 0xFF) << 8) | (merged(3) & 0xFF)
-    val dataOffset = if (version == 2) 16 else 12
-    var i = dataOffset
-    while (i < merged.length) {
-      merged(i) = (merged(i) | other(i)).toByte
-      i += 1
-    }
-  }
-}
-
-object BloomFilterBuildAccumulator {
-  /** Canonical in-process skip value; deserialized data is recognized by 4-byte zero content. */
-  val SkipSentinel: Array[Byte] = Array[Byte](0, 0, 0, 0)
 }

@@ -42,6 +42,7 @@ spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids.shims
 
 import com.nvidia.spark.rapids._
+import com.nvidia.spark.rapids.cubf.{InlineCuBFBuildGpuOverride, InlineCuBFBuildReplacement}
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
@@ -97,12 +98,12 @@ trait Spark330PlusShims extends Spark321PlusShims with Spark320PlusNonDBShims {
 
   // Replace optional planner stubs before GpuOverrides.
   override def applyPreGpuOverridesRules(plan: SparkPlan): SparkPlan =
-    InlineBFBuildReplacement.applyIfNeeded(plan)
+    InlineCuBFBuildReplacement.applyIfNeeded(plan)
 
   // GPU support ANSI interval types from 330
   override def getExecs: Map[Class[_ <: SparkPlan], ExecRule[_ <: SparkPlan]] =
     super.getExecs ++ PythonMapInArrowExecShims.execs ++
-      InlineBFBuildGpuOverride.execRules
+      InlineCuBFBuildGpuOverride.execRules
 
 }
 

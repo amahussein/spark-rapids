@@ -46,7 +46,7 @@ package com.nvidia.spark.rapids
  *
  * BF wire format is big-endian; V2 adds seed between numHashes and numWords.
  */
-object BloomFilterTestHelpers {
+object CuBFTestHelpers {
 
   val V1_HEADER_SIZE: Int = 12
 
@@ -87,7 +87,7 @@ object BloomFilterTestHelpers {
   }
 }
 
-/** Reflection-target shapes for `InlineBFBuildReplacement.readSpecs`. */
+/** Reflection-target shapes for `InlineCuBFBuildReplacement.readSpecs`. */
 object FakeInlineExecs {
 
   case class FakeSpec(

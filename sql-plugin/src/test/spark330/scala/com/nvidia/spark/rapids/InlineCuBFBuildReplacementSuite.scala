@@ -41,17 +41,18 @@
 spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids
 
-import com.nvidia.spark.rapids.BloomFilterTestHelpers._
+import com.nvidia.spark.rapids.CuBFTestHelpers._
 import com.nvidia.spark.rapids.FakeInlineExecs._
+import com.nvidia.spark.rapids.cubf.{CuBFBuildResultAccumulator, InlineCuBFBuildReplacement}
 import org.scalatest.funsuite.AnyFunSuite
 
 /** Tests CuBF replacement helpers and bloom-filter accumulator merge behavior. */
-class InlineBFBuildReplacementSuite extends AnyFunSuite {
+class InlineCuBFBuildReplacementSuite extends AnyFunSuite {
 
   Seq(1, 2).foreach { version =>
-    test(s"BloomFilterBuildAccumulator merge produces correct union [v$version]") {
-      val acc1 = new BloomFilterBuildAccumulator()
-      val acc2 = new BloomFilterBuildAccumulator()
+    test(s"CuBFBuildResultAccumulator merge produces correct union [v$version]") {
+      val acc1 = new CuBFBuildResultAccumulator()
+      val acc2 = new CuBFBuildResultAccumulator()
       acc1.add(makeBfBytes(version = version, dataLastByte = 0x0F))
       acc2.add(makeBfBytes(version = version, dataLastByte = 0xF0))
       acc1.merge(acc2)
@@ -64,24 +65,24 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
     }
   }
 
-  test("BloomFilterBuildAccumulator is zero when empty") {
-    val acc = new BloomFilterBuildAccumulator()
+  test("CuBFBuildResultAccumulator is zero when empty") {
+    val acc = new CuBFBuildResultAccumulator()
     assert(acc.isZero)
     assert(acc.value == null)
   }
 
-  test("BloomFilterBuildAccumulator copy is independent") {
-    val acc = new BloomFilterBuildAccumulator()
+  test("CuBFBuildResultAccumulator copy is independent") {
+    val acc = new CuBFBuildResultAccumulator()
     acc.add(makeBfBytes(dataLastByte = 1))
     val copy = acc.copy()
     acc.reset()
     assert(acc.isZero)
-    assert(!copy.asInstanceOf[BloomFilterBuildAccumulator].isZero)
+    assert(!copy.asInstanceOf[CuBFBuildResultAccumulator].isZero)
   }
 
   Seq(1, 2).foreach { version =>
-    test(s"BloomFilterBuildAccumulator single partition [v$version]") {
-      val acc = new BloomFilterBuildAccumulator()
+    test(s"CuBFBuildResultAccumulator single partition [v$version]") {
+      val acc = new CuBFBuildResultAccumulator()
       acc.add(makeBfBytes(version = version, dataLastByte = 42))
       assert(!acc.isZero)
       assert(acc.value(headerSize(version) + 7) == 42)
@@ -91,7 +92,7 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
   test("accumulator merge V2 preserves seed header field") {
     val left  = makeBfBytes(version = 2, seed = 0xDEADBEEF, dataLastByte = 0x0F)
     val right = makeBfBytes(version = 2, seed = 0xDEADBEEF, dataLastByte = 0xF0)
-    val acc = new BloomFilterBuildAccumulator()
+    val acc = new CuBFBuildResultAccumulator()
     acc.add(left)
     acc.add(right)
     val merged = acc.value
@@ -104,15 +105,15 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
     assert(merged(3) == 2, "V2 version header byte preserved")
   }
 
-  test("BloomFilterBuildAccumulator.add(null) is a defensive no-op") {
-    val acc = new BloomFilterBuildAccumulator()
+  test("CuBFBuildResultAccumulator.add(null) is a defensive no-op") {
+    val acc = new CuBFBuildResultAccumulator()
     acc.add(null)
     assert(acc.isZero,
       "add(null) must not mutate state")
   }
 
-  test("BloomFilterBuildAccumulator size mismatch fails closed via skip sentinel") {
-    val acc = new BloomFilterBuildAccumulator()
+  test("CuBFBuildResultAccumulator size mismatch fails closed via skip sentinel") {
+    val acc = new CuBFBuildResultAccumulator()
     val partitionA = makeBfBytes(version = 1, numWords = 1, dataLastByte = 0x0F)
     val partitionB = makeBfBytes(version = 1, numWords = 2, dataLastByte = 0xF0)
     assert(partitionA.length != partitionB.length,
@@ -124,13 +125,13 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
     } else {
       s"length ${acc.value.length}"
     }
-    assert(acc.value eq BloomFilterBuildAccumulator.SkipSentinel,
+    assert(acc.value eq CuBFBuildResultAccumulator.SkipSentinel,
       "size-mismatch merge must canonicalize to the skip sentinel, not throw or " +
         s"leave a partial value (got $observedValue)")
   }
 
-  test("InlineBFBuildReplacement class name is resolvable") {
-    val replacement = InlineBFBuildReplacement()
+  test("InlineCuBFBuildReplacement class name is resolvable") {
+    val replacement = InlineCuBFBuildReplacement()
     assert(replacement != null)
   }
 
@@ -142,7 +143,7 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
       seed = 0,
       xxHashSeed = 42L,
       child = null)
-    val specs = InlineBFBuildReplacement().readSpecs(fake)
+    val specs = InlineCuBFBuildReplacement().readSpecs(fake)
     assert(specs.size == 2)
     assert(specs.map(_.bfId) == Seq("bf-A", "bf-B"))
     assert(specs.map(_.keyColumnIndex) == Seq(0, 1))
@@ -153,7 +154,7 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
   test("readSpecs propagates reflective accessor failure (fail-closed contract)") {
     val broken = FakeBrokenInlineExec(null)
     val ex = intercept[Exception] {
-      InlineBFBuildReplacement().readSpecs(broken)
+      InlineCuBFBuildReplacement().readSpecs(broken)
     }
     assert(ex.getCause != null || ex.getMessage != null,
       "reflection failure must surface as an exception, not silently succeed")
@@ -169,7 +170,7 @@ class InlineBFBuildReplacementSuite extends AnyFunSuite {
       seed = 0,
       xxHashSeed = 42L,
       child = null)
-    val specs = InlineBFBuildReplacement().readSpecs(legacy)
+    val specs = InlineCuBFBuildReplacement().readSpecs(legacy)
     assert(specs.size == 1,
       s"expected 1 legacy spec, got ${specs.size}")
     val s = specs.head

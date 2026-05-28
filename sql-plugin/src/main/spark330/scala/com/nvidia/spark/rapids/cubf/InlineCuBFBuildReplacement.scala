@@ -39,11 +39,11 @@
 {"spark": "402"}
 {"spark": "411"}
 spark-rapids-shim-json-lines ***/
-package com.nvidia.spark.rapids
+package com.nvidia.spark.rapids.cubf
 
 import scala.util.control.NonFatal
 
-import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
+import com.nvidia.spark.rapids.RapidsConf
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
@@ -52,13 +52,13 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.internal.SQLConf
 
 /**
- * Replaces the optional planner's InlineBFBuildExec with `GpuGenerateBloomFilterExec`.
+ * Replaces the optional planner's InlineBFBuildExec with `GpuGenerateCuBFExec`.
  *
  * Reflection keeps this rule inert when the planner module is absent.
  */
-case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
+case class InlineCuBFBuildReplacement() extends Rule[SparkPlan] with Logging {
 
-  import InlineBFBuildReplacement._
+  import InlineCuBFBuildReplacement._
 
   override def apply(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
@@ -79,11 +79,11 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
       val numHashesCsv = specs.map(_.numHashes).mkString(",")
       val numBitsCsv = specs.map(_.numBits).mkString(",")
       logInfo(s"[CuBF-GpuOverride] Replacing InlineBFBuildExec " +
-        s"with GpuGenerateBloomFilterExec bfIds=[$bfIdsCsv] " +
+        s"with GpuGenerateCuBFExec bfIds=[$bfIdsCsv] " +
         s"keyIdxes=[$keyIdxCsv] numHashes=[$numHashesCsv] " +
         s"numBits=[$numBitsCsv] version=$bfVersion")
       val updaters = resolveBuildCostUpdaters(specs.map(_.bfId))
-      GpuGenerateBloomFilterExec(specs, bfVersion, seed,
+      GpuGenerateCuBFExec(specs, bfVersion, seed,
         xxHashSeed, child, updaters)
     } catch {
       case NonFatal(e) =>
@@ -113,7 +113,7 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
   }
 
   /** Reads current multi-spec shape, falling back to the legacy single-spec shape. */
-  private[rapids] def readSpecs(exec: Any): Seq[BFSpec] = {
+  private[rapids] def readSpecs(exec: Any): Seq[CuBFSpec] = {
     val execClass = exec.getClass
     val specsMethod = try Some(execClass.getMethod("specs")) catch {
       case _: NoSuchMethodException => None
@@ -122,7 +122,7 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
       case Some(m) =>
         val rawSpecs = m.invoke(exec).asInstanceOf[Seq[_]]
         rawSpecs.map { specObj =>
-          BFSpec(
+          CuBFSpec(
             bfId = getField[String](specObj, "bfId"),
             keyColumnIndex = getField[Int](specObj, "keyColumnIndex"),
             numHashes = getField[Int](specObj, "numHashes"),
@@ -130,7 +130,7 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
         }.toSeq
       case None =>
         // Legacy single-spec InlineBFBuildExec shape.
-        val legacySpec = BFSpec(
+        val legacySpec = CuBFSpec(
           bfId = getField[String](exec, "bfId"),
           keyColumnIndex = getField[Int](exec, "keyColumnIndex"),
           numHashes = getField[Int](exec, "numHashes"),
@@ -145,14 +145,14 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
   }
 }
 
-object InlineBFBuildReplacement {
+object InlineCuBFBuildReplacement {
   // Fully qualified class name of the optional planner's CPU stub.
   private val inlineBFClassName =
     "com.nvidia.spark.rapids.optimizer.cubloomfilter.InlineBFBuildExec"
 
   def applyIfNeeded(plan: SparkPlan): SparkPlan = {
     if (isNeeded(plan)) {
-      InlineBFBuildReplacement().apply(plan)
+      InlineCuBFBuildReplacement().apply(plan)
     } else {
       plan
     }

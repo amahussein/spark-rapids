@@ -56,7 +56,7 @@ package com.nvidia.spark.rapids.optimizer.cubloomfilter {
   }
 }
 
-package com.nvidia.spark.rapids.shims {
+package com.nvidia.spark.rapids.cubf {
 
   import org.scalatest.funsuite.AnyFunSuite
 
@@ -67,7 +67,6 @@ package com.nvidia.spark.rapids.shims {
     UnaryExecNode}
 
   import com.nvidia.spark.rapids.{CuBFLocalSparkSuite, RapidsConf}
-  import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
   import com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec
 
   /** Regression coverage for AQE-aware `findBfIdInPlan`. */

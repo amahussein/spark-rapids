@@ -18,6 +18,7 @@ package com.nvidia.spark.rapids
 
 import ai.rapids.cudf.{ColumnVector, ColumnView}
 import com.nvidia.spark.rapids.Arm.withResource
+import com.nvidia.spark.rapids.cubf.{CuBFBuildResultAccumulator, CuBFSpec, GpuGenerateCuBFExec}
 import com.nvidia.spark.rapids.jni.{BloomFilter, Hash}
 
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
@@ -27,7 +28,7 @@ import org.apache.spark.sql.types.LongType
  * Drives a real GPU plan end-to-end so the build-side accumulator value Spark eventually
  * collects matches an independently built bloom filter byte-for-byte.
  */
-class GpuGenerateBloomFilterAccumulatorSuite extends SparkQueryCompareTestSuite {
+class CuBFBuildResultAccumulatorSuite extends SparkQueryCompareTestSuite {
 
   test("build-side accumulator matches an independently built reference filter") {
     // Drives a real GPU plan end-to-end so the test exercises Spark's actual
@@ -45,8 +46,8 @@ class GpuGenerateBloomFilterAccumulatorSuite extends SparkQueryCompareTestSuite 
         start = 0L, end = numRows.toLong, step = 1L, numSlices = 1,
         output = Seq(AttributeReference("id", LongType)()),
         targetSizeBytes = Math.max(numRows / 8, 1))
-      val exec = GpuGenerateBloomFilterExec(
-        specs = Seq(BFSpec(bfId, keyColumnIndex = 0,
+      val exec = GpuGenerateCuBFExec(
+        specs = Seq(CuBFSpec(bfId, keyColumnIndex = 0,
           numHashes = numHashes, numBits = numBits)),
         bfVersion = bfVersion, seed = bfSeed, xxHashSeed = xxHashSeed,
         child = rangeExec)
@@ -62,7 +63,7 @@ class GpuGenerateBloomFilterAccumulatorSuite extends SparkQueryCompareTestSuite 
         Iterator.single(count)
       }.collect().sum
       assert(produced == numRows,
-        s"expected $numRows rows to flow through GpuGenerateBloomFilterExec, got $produced")
+        s"expected $numRows rows to flow through GpuGenerateCuBFExec, got $produced")
       val accBytes = exec.accumulators(bfId).value
       val reference = referenceBfBytes(numRows, numHashes, numBits, bfVersion, bfSeed,
         xxHashSeed)
@@ -70,7 +71,7 @@ class GpuGenerateBloomFilterAccumulatorSuite extends SparkQueryCompareTestSuite 
     }
 
     assert(accValue != null, "build-side accumulator must hold a value after a full drain")
-    assert(accValue ne BloomFilterBuildAccumulator.SkipSentinel,
+    assert(accValue ne CuBFBuildResultAccumulator.SkipSentinel,
       "fully drained partition must not publish the skip sentinel")
     assert(accValue.length == expected.length,
       s"BF byte length mismatch: ${accValue.length} vs ${expected.length}")
@@ -98,8 +99,8 @@ class GpuGenerateBloomFilterAccumulatorSuite extends SparkQueryCompareTestSuite 
         start = 0L, end = numRows.toLong, step = 1L, numSlices = 1,
         output = Seq(AttributeReference("id", LongType)()),
         targetSizeBytes = (numRows / 4) * 8L)
-      val exec = GpuGenerateBloomFilterExec(
-        specs = Seq(BFSpec(bfId, keyColumnIndex = 0,
+      val exec = GpuGenerateCuBFExec(
+        specs = Seq(CuBFSpec(bfId, keyColumnIndex = 0,
           numHashes = numHashes, numBits = numBits)),
         bfVersion = bfVersion, seed = bfSeed, xxHashSeed = xxHashSeed,
         child = rangeExec)
@@ -123,7 +124,7 @@ class GpuGenerateBloomFilterAccumulatorSuite extends SparkQueryCompareTestSuite 
       exec.accumulators(bfId).value
     }
 
-    assert(accValue eq BloomFilterBuildAccumulator.SkipSentinel,
+    assert(accValue eq CuBFBuildResultAccumulator.SkipSentinel,
       "partial-drain partition must publish the skip sentinel into the driver-side " +
         s"accumulator after Spark merges the executor result; got " +
         s"${if (accValue == null) "null" else accValue.toSeq}")
@@ -138,7 +139,7 @@ class GpuGenerateBloomFilterAccumulatorSuite extends SparkQueryCompareTestSuite 
       withResource(Hash.xxhash64(xxHashSeed, Array[ColumnView](keyCol))) { hashedCol =>
         withResource(BloomFilter.create(bfVersion, numHashes, numBits, bfSeed)) { bf =>
           BloomFilter.put(bf, hashedCol)
-          GpuGenerateBloomFilterExec.scalarToHostBytes(bf)
+          GpuGenerateCuBFExec.scalarToHostBytes(bf)
         }
       }
     }

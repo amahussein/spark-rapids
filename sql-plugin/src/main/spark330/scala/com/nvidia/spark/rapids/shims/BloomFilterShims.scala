@@ -47,6 +47,7 @@ spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids.shims
 
 import com.nvidia.spark.rapids._
+import com.nvidia.spark.rapids.cubf.CuBFProbeDiagWiring
 import com.nvidia.spark.rapids.jni.BloomFilter
 
 import org.apache.spark.internal.Logging

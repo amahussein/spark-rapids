@@ -43,24 +43,25 @@ package com.nvidia.spark.rapids
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 
-import com.nvidia.spark.rapids.BloomFilterTestHelpers._
-import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
+import com.nvidia.spark.rapids.CuBFTestHelpers._
+import com.nvidia.spark.rapids.cubf.{CuBFBuildResultAccumulator, CuBFDiagPairMetric}
+import com.nvidia.spark.rapids.cubf.{CuBFSpec, GpuGenerateCuBFExec, InlineCuBFBuildReplacement}
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.execution.SparkPlan
 
-/** Tests multi-spec `GpuGenerateBloomFilterExec` driver-side behavior. */
-class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
+/** Tests multi-spec `GpuGenerateCuBFExec` driver-side behavior. */
+class GpuGenerateCuBFExecSuite extends AnyFunSuite
     with CuBFLocalSparkSuite {
 
   private def stubChild(): SparkPlan = spark.range(0).queryExecution.executedPlan
 
   test("multi-spec registers N accumulators") {
     val specs = Seq(
-      BFSpec("bf-A", 0, 5, 100000L),
-      BFSpec("bf-B", 1, 5, 100000L),
-      BFSpec("bf-C", 2, 5, 100000L))
-    val exec = GpuGenerateBloomFilterExec(
+      CuBFSpec("bf-A", 0, 5, 100000L),
+      CuBFSpec("bf-B", 1, 5, 100000L),
+      CuBFSpec("bf-C", 2, 5, 100000L))
+    val exec = GpuGenerateCuBFExec(
       specs = specs,
       bfVersion = 1,
       seed = 0,
@@ -80,8 +81,8 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("single-spec registers one accumulator") {
-    val spec = BFSpec("single", 0, 7, 524288L)
-    val exec = GpuGenerateBloomFilterExec(
+    val spec = CuBFSpec("single", 0, 7, 524288L)
+    val exec = GpuGenerateCuBFExec(
       specs = Seq(spec),
       bfVersion = 1,
       seed = 0,
@@ -96,9 +97,9 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   Seq(1, 2).foreach { version =>
     test(s"multi-spec produces N BFs with no cross-contamination [v$version]") {
       val specs = Seq(
-        BFSpec("bf-A", 0, 1, 64),
-        BFSpec("bf-B", 1, 1, 64))
-      val exec = GpuGenerateBloomFilterExec(
+        CuBFSpec("bf-A", 0, 1, 64),
+        CuBFSpec("bf-B", 1, 1, 64))
+      val exec = GpuGenerateCuBFExec(
         specs = specs,
         bfVersion = version,
         seed = 0,
@@ -122,22 +123,22 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
 
   test("canonical is always transparent") {
     val child = stubChild()
-    val execSingle = GpuGenerateBloomFilterExec(
-      specs = Seq(BFSpec("single", 0, 5, 100000L)),
+    val execSingle = GpuGenerateCuBFExec(
+      specs = Seq(CuBFSpec("single", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L, child = child)
-    val execMulti = GpuGenerateBloomFilterExec(
+    val execMulti = GpuGenerateCuBFExec(
       specs = Seq(
-        BFSpec("bf-A", 0, 5, 100000L),
-        BFSpec("bf-B", 1, 5, 100000L)),
+        CuBFSpec("bf-A", 0, 5, 100000L),
+        CuBFSpec("bf-B", 1, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L, child = child)
     assert(execSingle.canonicalized == child.canonicalized,
-      "single-spec GpuGenerateBloomFilterExec must be transparent")
+      "single-spec GpuGenerateCuBFExec must be transparent")
     assert(execMulti.canonicalized == child.canonicalized,
-      "multi-spec GpuGenerateBloomFilterExec must be transparent")
-    val execMulti2 = GpuGenerateBloomFilterExec(
+      "multi-spec GpuGenerateCuBFExec must be transparent")
+    val execMulti2 = GpuGenerateCuBFExec(
       specs = Seq(
-        BFSpec("bf-A", 0, 5, 100000L),
-        BFSpec("bf-B", 1, 5, 100000L)),
+        CuBFSpec("bf-A", 0, 5, 100000L),
+        CuBFSpec("bf-B", 1, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L, child = child)
     assert(execMulti.canonicalized == execMulti2.canonicalized,
       "sibling multi-spec wrappers with identical specs must " +
@@ -145,26 +146,26 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("accumulator markSkipped publishes sentinel value") {
-    val acc = new BloomFilterBuildAccumulator()
+    val acc = new CuBFBuildResultAccumulator()
     assert(acc.isZero)
     acc.markSkipped()
     assert(!acc.isZero)
-    assert(acc.value eq BloomFilterBuildAccumulator.SkipSentinel,
+    assert(acc.value eq CuBFBuildResultAccumulator.SkipSentinel,
       "markSkipped must leave the sentinel identity in `value`")
   }
 
   Seq(1, 2).foreach { version =>
     test(s"accumulator merge sentinel wins over real BF [v$version]") {
-      val sentinel = BloomFilterBuildAccumulator.SkipSentinel
+      val sentinel = CuBFBuildResultAccumulator.SkipSentinel
       val realBytes = makeBfBytes(version = version, dataLastByte = 0x42)
 
-      val a1 = new BloomFilterBuildAccumulator()
+      val a1 = new CuBFBuildResultAccumulator()
       a1.add(sentinel.clone())
       a1.add(realBytes)
       assert(a1.value eq sentinel,
         "sentinel-then-real must canonicalize to the sentinel identity")
 
-      val a2 = new BloomFilterBuildAccumulator()
+      val a2 = new CuBFBuildResultAccumulator()
       a2.add(realBytes)
       a2.add(sentinel.clone())
       assert(a2.value eq sentinel,
@@ -173,18 +174,18 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("accumulator merge sentinel with sentinel yields sentinel") {
-    val a = new BloomFilterBuildAccumulator()
+    val a = new CuBFBuildResultAccumulator()
     a.markSkipped()
     a.add(Array[Byte](0, 0, 0, 0)) // post-serialization content form
-    assert(a.value eq BloomFilterBuildAccumulator.SkipSentinel)
+    assert(a.value eq CuBFBuildResultAccumulator.SkipSentinel)
   }
 
   Seq(1, 2).foreach { version =>
     test(s"accumulator merge real with real does not canonicalize to sentinel [v$version]") {
-      val a = new BloomFilterBuildAccumulator()
+      val a = new CuBFBuildResultAccumulator()
       a.add(makeBfBytes(version = version, dataLastByte = 0x0F))
       a.add(makeBfBytes(version = version, dataLastByte = 0xF0))
-      assert(a.value ne BloomFilterBuildAccumulator.SkipSentinel,
+      assert(a.value ne CuBFBuildResultAccumulator.SkipSentinel,
         "two real BFs must not canonicalize to the sentinel")
       assert((a.value(headerSize(version) + 7) & 0xFF) == 0xFF,
         "OR-merge expected 0xFF data")
@@ -198,12 +199,12 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       // payload) could silently corrupt the accumulated bloom filter.
       val bytes = makeBfBytes(version = version, dataLastByte = 0xAB)
       val expected = bytes.clone()
-      val acc = new BloomFilterBuildAccumulator()
+      val acc = new CuBFBuildResultAccumulator()
       acc.add(bytes)
       java.util.Arrays.fill(bytes, 0.toByte)
       assert(java.util.Arrays.equals(acc.value, expected),
         "accumulator value must not alias the caller-provided bytes")
-      assert(acc.value ne BloomFilterBuildAccumulator.SkipSentinel,
+      assert(acc.value ne CuBFBuildResultAccumulator.SkipSentinel,
         "post-mutation value must not collapse to the sentinel identity")
     }
   }
@@ -228,7 +229,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     try {
       withSqlConf(RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.key -> "false") {
         withSqlExecutionId(301L) {
-          val updaters = InlineBFBuildReplacement()
+          val updaters = InlineCuBFBuildReplacement()
             .resolveBuildCostUpdaters(Seq("bf-diag-off"))
           assert(updaters.isEmpty)
           assert(CuBFDiagPairMetric.buildCacheSize === 0)
@@ -237,7 +238,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
 
       withSqlConf(RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.key -> "true") {
         withSqlExecutionId(302L) {
-          val updaters = InlineBFBuildReplacement()
+          val updaters = InlineCuBFBuildReplacement()
             .resolveBuildCostUpdaters(Seq("", "cubf-", "bf-diag-on"))
           assert(updaters.keySet === Set("bf-diag-on"))
           assert(CuBFDiagPairMetric.buildContains(302L, "bf-diag-on"))
@@ -245,7 +246,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
           assert(!CuBFDiagPairMetric.buildContains(302L, "cubf-"))
         }
         withSqlExecutionId(303L) {
-          val updaters = InlineBFBuildReplacement().resolveBuildCostUpdaters(Seq.empty)
+          val updaters = InlineCuBFBuildReplacement().resolveBuildCostUpdaters(Seq.empty)
           assert(updaters.isEmpty)
           assert(!CuBFDiagPairMetric.buildContains(303L, ""))
         }
@@ -256,7 +257,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
   }
 
   test("resolveEffectiveMaxFilterBytes is fail-safe on missing capability helper") {
-    val cap = GpuGenerateBloomFilterExec.resolveEffectiveMaxFilterBytes()
+    val cap = GpuGenerateCuBFExec.resolveEffectiveMaxFilterBytes()
     val v1Ceiling = (1L << 31) / 8L
     assert(cap == v1Ceiling,
       s"expected V1 ceiling ($v1Ceiling); got $cap. " +
@@ -265,7 +266,7 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
 
   test("requires nonEmpty specs") {
     val ex = intercept[IllegalArgumentException] {
-      GpuGenerateBloomFilterExec(
+      GpuGenerateCuBFExec(
         specs = Seq.empty,
         bfVersion = 1, seed = 0, xxHashSeed = 42L,
         child = stubChild())
@@ -276,8 +277,8 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
 
   test("recordBuildUpdate records one pair per BF build") {
     val metric = new CuBFDiagPairMetric
-    val exec = GpuGenerateBloomFilterExec(
-      specs = Seq(BFSpec("cubf-r7-single", 0, 5, 100000L)),
+    val exec = GpuGenerateCuBFExec(
+      specs = Seq(CuBFSpec("cubf-r7-single", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild(),
       buildCostUpdaters = Map("cubf-r7-single" -> metric))
@@ -290,11 +291,11 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     val metricA = new CuBFDiagPairMetric
     val metricB = new CuBFDiagPairMetric
     val metricC = new CuBFDiagPairMetric
-    val exec = GpuGenerateBloomFilterExec(
+    val exec = GpuGenerateCuBFExec(
       specs = Seq(
-        BFSpec("cubf-r7-A", 0, 5, 100000L),
-        BFSpec("cubf-r7-B", 1, 5, 200000L),
-        BFSpec("cubf-r7-C", 2, 5, 300000L)),
+        CuBFSpec("cubf-r7-A", 0, 5, 100000L),
+        CuBFSpec("cubf-r7-B", 1, 5, 200000L),
+        CuBFSpec("cubf-r7-C", 2, 5, 300000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild(),
       buildCostUpdaters = Map(
@@ -314,13 +315,13 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     // empty-map exec. Catches Map.get -> Map.apply refactors and any
     // future cross-instance side-effect leak.
     val metric = new CuBFDiagPairMetric
-    val sibling = GpuGenerateBloomFilterExec(
-      specs = Seq(BFSpec("cubf-active", 0, 5, 100000L)),
+    val sibling = GpuGenerateCuBFExec(
+      specs = Seq(CuBFSpec("cubf-active", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild(),
       buildCostUpdaters = Map("cubf-active" -> metric))
-    val target = GpuGenerateBloomFilterExec(
-      specs = Seq(BFSpec("cubf-no-updater", 0, 5, 100000L)),
+    val target = GpuGenerateCuBFExec(
+      specs = Seq(CuBFSpec("cubf-no-updater", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild())
     target.recordBuildUpdate("cubf-no-updater", 1000000L, 8192L)
@@ -333,8 +334,8 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
 
   test("recordBuildUpdate is a no-op when bfId is not in the map") {
     val metric = new CuBFDiagPairMetric
-    val exec = GpuGenerateBloomFilterExec(
-      specs = Seq(BFSpec("cubf-known", 0, 5, 100000L)),
+    val exec = GpuGenerateCuBFExec(
+      specs = Seq(CuBFSpec("cubf-known", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild(),
       buildCostUpdaters = Map("cubf-known" -> metric))
@@ -345,13 +346,13 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
 
   test("isNeeded returns false for plan without markers") {
     val plan = spark.range(10).queryExecution.executedPlan
-    assert(!InlineBFBuildReplacement.isNeeded(plan),
+    assert(!InlineCuBFBuildReplacement.isNeeded(plan),
       "isNeeded must return false when no InlineBFBuildExec markers are present")
   }
 
   test("applyIfNeeded returns plan unchanged when no markers are present") {
     val plan = spark.range(10).queryExecution.executedPlan
-    assert(InlineBFBuildReplacement.applyIfNeeded(plan) eq plan,
+    assert(InlineCuBFBuildReplacement.applyIfNeeded(plan) eq plan,
       "applyIfNeeded must return the original plan reference unchanged")
   }
 
@@ -361,43 +362,43 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       // emits the skip sentinel because it closed early, the driver-side merge must promote
       // the merged value to the sentinel so a probe filter built from a strict subset of
       // build keys cannot silently drop matching probe rows.
-      val real = new BloomFilterBuildAccumulator()
+      val real = new CuBFBuildResultAccumulator()
       real.add(makeBfBytes(version = version, dataLastByte = 0x42))
-      val poisoned = new BloomFilterBuildAccumulator()
-      poisoned.add(BloomFilterBuildAccumulator.SkipSentinel)
-      val driver = new BloomFilterBuildAccumulator()
+      val poisoned = new CuBFBuildResultAccumulator()
+      poisoned.add(CuBFBuildResultAccumulator.SkipSentinel)
+      val driver = new CuBFBuildResultAccumulator()
       driver.merge(real)
       driver.merge(poisoned)
-      assert(driver.value eq BloomFilterBuildAccumulator.SkipSentinel,
+      assert(driver.value eq CuBFBuildResultAccumulator.SkipSentinel,
         "a single sentinel-emitting partition must invalidate the merged BF")
       // Reverse the merge order to pin the contract regardless of arrival order.
-      val driverReverse = new BloomFilterBuildAccumulator()
+      val driverReverse = new CuBFBuildResultAccumulator()
       driverReverse.merge(poisoned)
       driverReverse.merge(real)
-      assert(driverReverse.value eq BloomFilterBuildAccumulator.SkipSentinel,
+      assert(driverReverse.value eq CuBFBuildResultAccumulator.SkipSentinel,
         "merge order must not change the sentinel-wins outcome")
     }
   }
 
   test("sentinel survives executor-side serialization round-trip") {
-    // BloomFilterBuildAccumulator's writeReplace branches on `atDriverSide`. The driver
+    // CuBFBuildResultAccumulator's writeReplace branches on `atDriverSide`. The driver
     // branch serializes a zeroed copyAndReset(), so a naive driver-local round-trip would
     // never exercise the executor-to-driver path that ships the build result. Force the
     // executor-side branch by registering on the driver and doing an initial round-trip
     // that flips `atDriverSide` to false via AccumulatorV2.readObject's flip logic, then
     // mutate the deserialized copy and ship it back the way Spark would.
     val sc = spark.sparkContext
-    val driverAcc = new BloomFilterBuildAccumulator()
+    val driverAcc = new CuBFBuildResultAccumulator()
     sc.register(driverAcc, "cubf-roundtrip-test")
     val executorAcc = javaRoundTrip(driverAcc)
-    executorAcc.add(BloomFilterBuildAccumulator.SkipSentinel)
+    executorAcc.add(CuBFBuildResultAccumulator.SkipSentinel)
     val driverCopy = javaRoundTrip(executorAcc)
-    val merged = new BloomFilterBuildAccumulator()
+    val merged = new CuBFBuildResultAccumulator()
     merged.merge(driverCopy)
     // Use the public poison-wins contract to detect the sentinel without relying on the
     // private isSkipShape predicate: a subsequent add of any real BF must not unseat it.
     merged.add(makeBfBytes(version = 1, dataLastByte = 0x42))
-    assert(merged.value eq BloomFilterBuildAccumulator.SkipSentinel,
+    assert(merged.value eq CuBFBuildResultAccumulator.SkipSentinel,
       "an executor-emitted sentinel must survive Java serialization and merge")
   }
 
@@ -414,17 +415,17 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     val metric1 = new CuBFDiagPairMetric
     val metric2 = new CuBFDiagPairMetric
     val specs = Seq(
-      BFSpec("bf-A", 0, 5, 100000L),
-      BFSpec("bf-B", 1, 5, 100000L))
-    val with1 = GpuGenerateBloomFilterExec(
+      CuBFSpec("bf-A", 0, 5, 100000L),
+      CuBFSpec("bf-B", 1, 5, 100000L))
+    val with1 = GpuGenerateCuBFExec(
       specs = specs, bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = child,
       buildCostUpdaters = Map("bf-A" -> metric1, "bf-B" -> metric1))
-    val with2 = GpuGenerateBloomFilterExec(
+    val with2 = GpuGenerateCuBFExec(
       specs = specs, bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = child,
       buildCostUpdaters = Map("bf-A" -> metric2, "bf-B" -> metric2))
-    val without = GpuGenerateBloomFilterExec(
+    val without = GpuGenerateCuBFExec(
       specs = specs, bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = child)
     assert(with1.canonicalized == with2.canonicalized,

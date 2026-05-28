@@ -16,9 +16,9 @@ This document covers the following topics:
 * [3. Design Goals](#3-design-goals)
 * [4. End-to-End Architecture](#4-end-to-end-architecture)
 * [5. Component Design](#5-component-design)
-  * [5.1 BFSpec](#51-bfspec)
-  * [5.2 GpuGenerateBloomFilterExec](#52-gpugeneratebloomfilterexec)
-  * [5.3 InlineBFBuildReplacement](#53-inlinebfbuildreplacement)
+  * [5.1 CuBFSpec](#51-cubfspec)
+  * [5.2 GpuGenerateCuBFExec](#52-gpugeneratecubfexec)
+  * [5.3 InlineCuBFBuildReplacement](#53-inlinecubfbuildreplacement)
   * [5.4 GpuOverrides Registration](#54-gpuoverrides-registration)
   * [5.5 Build-Side Accumulator and Delivery Contract](#55-build-side-accumulator-and-delivery-contract)
   * [5.6 Probe-Side Metadata and Instrumentation](#56-probe-side-metadata-and-instrumentation)
@@ -136,7 +136,7 @@ safe behavior when markers are absent.
 |                         Logical / Planner Layer                           |
 |                                                                           |
 |  choose opportunity -> emit build marker/stub -> emit probe consumer       |
-|                        (bfId + BFSpec data)       (same bfId)             |
+|                        (bfId + CuBFSpec data)       (same bfId)             |
 +----------------------------------+----------------------------------------+
                                    |
                                    | physical plan
@@ -146,13 +146,13 @@ safe behavior when markers are absent.
 |                                                                           |
 |  ColumnarOverrideRules.preColumnarTransitions                             |
 |    -> SparkShimImpl.applyPreGpuOverridesRules                             |
-|    -> InlineBFBuildReplacement.applyIfNeeded                              |
+|    -> InlineCuBFBuildReplacement.applyIfNeeded                              |
 |    -> GpuOverrides                                                        |
 |                                                                           |
-|  InlineBFBuildReplacement                                                 |
+|  InlineCuBFBuildReplacement                                                 |
 |    - detects optional build marker reflectively                            |
-|    - reads one or more BFSpec values                                       |
-|    - produces GpuGenerateBloomFilterExec                                   |
+|    - reads one or more CuBFSpec values                                       |
+|    - produces GpuGenerateCuBFExec                                   |
 +----------------------------------+----------------------------------------+
                                    |
                                    | GPU physical plan
@@ -160,7 +160,7 @@ safe behavior when markers are absent.
 +---------------------------------------------------------------------------+
 |                         Build-Side GPU Pipeline                            |
 |                                                                           |
-|  child batches -> GpuGenerateBloomFilterExec -> same child batches         |
+|  child batches -> GpuGenerateCuBFExec -> same child batches         |
 |                       |                                                   |
 |                       +-- build per-partition bloom filters                |
 |                       +-- publish bytes or skip state by bfId              |
@@ -182,9 +182,9 @@ available on the classpath.
 
 ## 5. Component Design
 
-### 5.1 `BFSpec`
+### 5.1 `CuBFSpec`
 
-`BFSpec` is the per-bloom-filter build specification copied from the optional
+`CuBFSpec` is the per-bloom-filter build specification copied from the optional
 planner marker into RAPIDS execution. It contains:
 
 | Field | Meaning |
@@ -215,14 +215,14 @@ two bloom filters to different probe-side consumers:
 ```
 
 Rather than running two inline build wrappers over the same child, the planner
-can represent the shared child once and ask `GpuGenerateBloomFilterExec` to build
+can represent the shared child once and ask `GpuGenerateCuBFExec` to build
 both filters in the same columnar pass:
 
 ```
-GpuGenerateBloomFilterExec(
+GpuGenerateCuBFExec(
   specs = Seq(
-    BFSpec("bf_customer", keyColumnIndex = 0, numHashes, numBits),
-    BFSpec("bf_order",    keyColumnIndex = 1, numHashes, numBits)),
+    CuBFSpec("bf_customer", keyColumnIndex = 0, numHashes, numBits),
+    CuBFSpec("bf_order",    keyColumnIndex = 1, numHashes, numBits)),
   child = filteredDimensionKeys)
 ```
 
@@ -233,7 +233,7 @@ that as one producer and multiple consumers of the same `bfId`:
                             shared build stream
                                    |
                                    v
-             GpuGenerateBloomFilterExec(BFSpec("bf_customer", ...))
+             GpuGenerateCuBFExec(CuBFSpec("bf_customer", ...))
                                    |
                                    v
                          delivery for bf_customer
@@ -243,15 +243,15 @@ that as one producer and multiple consumers of the same `bfId`:
                     in join A            in join B
 ```
 
-In that case the same `BFSpec` and `bfId` describe one logical bloom filter, and
+In that case the same `CuBFSpec` and `bfId` describe one logical bloom filter, and
 multiple probe-side predicates may read the same delivered bytes. However, a
-duplicated `BFSpec` inside two independently executed build nodes is not enough
+duplicated `CuBFSpec` inside two independently executed build nodes is not enough
 to guarantee sharing; each build node would still construct and publish its own
 partition-local bloom filters. The planner layer is responsible for coalescing
 or reusing the shared build producer when it proves the build child, key column,
 hash parameters, bloom filter size, and lifecycle are identical.
 
-The current execution contract is a single-key-column contract: each `BFSpec`
+The current execution contract is a single-key-column contract: each `CuBFSpec`
 points at one build-side key column. Composite-key support should extend the
 spec and probe contracts deliberately rather than overloading
 `keyColumnIndex`. Build and probe execution must agree on row-level composite
@@ -277,12 +277,12 @@ canonicalization safety in §5.2:
    filtered dimension are the canonical case.
 6. **Sibling-coalescence pre-pass.** Distinct specs over the same build child
    are coalesced into a single multi-spec marker before
-   `InlineBFBuildReplacement` runs. Two `InlineBFBuildExec` nodes with
+   `InlineCuBFBuildReplacement` runs. Two `InlineBFBuildExec` nodes with
    different specs and equal canonical children are never emitted.
 
-### 5.2 `GpuGenerateBloomFilterExec`
+### 5.2 `GpuGenerateCuBFExec`
 
-`GpuGenerateBloomFilterExec` is a unary `GpuExec` that builds bloom filters
+`GpuGenerateCuBFExec` is a unary `GpuExec` that builds bloom filters
 inline with the build-side GPU pipeline.
 
 Shared build-exec parameters:
@@ -299,10 +299,10 @@ Shared build-exec parameters:
                     |
                     v
 +---------------------------------------------+
-|       GpuGenerateBloomFilterExec            |
+|       GpuGenerateCuBFExec            |
 |                                             |
 |  for each non-empty batch:                  |
-|    for each BFSpec:                         |
+|    for each CuBFSpec:                         |
 |      key column -> XxHash64 -> put          |
 |                                             |
 |  on partition completion:                   |
@@ -346,11 +346,11 @@ Safety behavior:
 - GPU resources are closed on normal iterator exhaustion and through task
   completion cleanup if a task fails or the iterator is abandoned.
 
-### 5.3 `InlineBFBuildReplacement`
+### 5.3 `InlineCuBFBuildReplacement`
 
-`InlineBFBuildReplacement` is a pre-`GpuOverrides` physical rule. It looks for
+`InlineCuBFBuildReplacement` is a pre-`GpuOverrides` physical rule. It looks for
 an optional planner-emitted inline bloom filter build marker and replaces it with
-`GpuGenerateBloomFilterExec`.
+`GpuGenerateCuBFExec`.
 
 The shim entry point performs a fast class-name scan with `isNeeded` before
 instantiating the replacement rule, so plans without CuBF markers bypass rule
@@ -364,18 +364,18 @@ The replacement is intentionally reflection-based:
 physical plan
     |
     v
-InlineBFBuildReplacement
+InlineCuBFBuildReplacement
     |
     +-- no marker class/name present -------> return original plan
     |
-    +-- marker found and fields readable ---> GpuGenerateBloomFilterExec
+    +-- marker found and fields readable ---> GpuGenerateCuBFExec
     |
     +-- marker found but unreadable --------> return original marker
 ```
 
 This avoids a compile-time dependency on planner-layer classes. The preferred
 marker shape exposes a `specs` sequence. A legacy single-spec shape can be
-adapted into a one-element `Seq[BFSpec]`, which keeps the downstream execution
+adapted into a one-element `Seq[CuBFSpec]`, which keeps the downstream execution
 contract uniform.
 
 If replacement cannot be performed, the rule leaves the original plan unchanged.
@@ -384,27 +384,27 @@ or is not emitted in unsupported environments.
 
 ### 5.4 `GpuOverrides` Registration
 
-After replacement, `GpuGenerateBloomFilterExec` is already a GPU physical
+After replacement, `GpuGenerateCuBFExec` is already a GPU physical
 operator. It is still registered with `GpuOverrides` through
-`InlineBFBuildGpuOverride` so the normal RAPIDS planning pass recognizes it as
+`InlineCuBFBuildGpuOverride` so the normal RAPIDS planning pass recognizes it as
 GPU-compatible.
 
 The registration is pass-through:
 
 - Tagging does not reject the exec.
-- Conversion returns the existing `GpuGenerateBloomFilterExec`.
+- Conversion returns the existing `GpuGenerateCuBFExec`.
 - The rule exists to keep the normal RAPIDS override pipeline aware of the
   already-GPU node.
 
 ### 5.5 Build-Side Accumulator and Delivery Contract
 
-`BloomFilterBuildAccumulator` is the build-side delivery primitive. Each
+`CuBFBuildResultAccumulator` is the build-side delivery primitive. Each
 `bfId` has a separate accumulator. Partition-local bloom filter bytes are merged
 on the driver by bitwise OR over the serialized bloom filter data section.
 
 ```
 Partition 0 bloom filter bytes --+
-Partition 1 bloom filter bytes --+--> BloomFilterBuildAccumulator
+Partition 1 bloom filter bytes --+--> CuBFBuildResultAccumulator
 Partition 2 bloom filter bytes --+              |
                                                 v
                                       merged bloom filter bytes
@@ -538,9 +538,9 @@ Compatibility expectations:
 CuBF execution support is wired through the Spark shim layer:
 
 1. A generic shim hook allows pre-`GpuOverrides` physical rules.
-2. Supported bloom filter profiles apply `InlineBFBuildReplacement` before the
+2. Supported bloom filter profiles apply `InlineCuBFBuildReplacement` before the
    normal GPU override pass.
-3. The same supported profiles register `GpuGenerateBloomFilterExec` as an
+3. The same supported profiles register `GpuGenerateCuBFExec` as an
    already-GPU physical operator.
 4. Profiles without Spark runtime bloom filter support keep empty or no-op bloom
    filter shims.
@@ -557,10 +557,10 @@ Current profile behavior is split into three tiers:
 |--------------|---------------|
 | Pre-3.3.0 profiles | No Spark bloom filter expression support is registered. |
 | Databricks shim variants | Spark bloom filter expression support is retained, but CuBF build exec wiring and pre-`GpuOverrides` replacement are not enabled. These profiles fall through to the base shim identity and remain inert for CuBF build markers. |
-| OSS Spark 3.3.0+ profiles | Spark bloom filter expression support, `InlineBFBuildReplacement`, and `GpuGenerateBloomFilterExec` registration are enabled. |
+| OSS Spark 3.3.0+ profiles | Spark bloom filter expression support, `InlineCuBFBuildReplacement`, and `GpuGenerateCuBFExec` registration are enabled. |
 
 The canonical source for supported profiles is the `spark-rapids-shim-json-lines`
-annotation header in `GpuGenerateBloomFilterExec.scala`.
+annotation header in `GpuGenerateCuBFExec.scala`.
 
 ## 6. Inertness & Compatibility
 
@@ -597,7 +597,7 @@ Compatibility properties:
 
 ### 7.1 Pass-Through Semantics
 
-`GpuGenerateBloomFilterExec` must not change the build-side data stream. Its
+`GpuGenerateCuBFExec` must not change the build-side data stream. Its
 child batches are returned to the parent operator unchanged, and the output
 schema is the child schema. This property is required so adding a CuBF build node
 does not affect join build-side semantics.
@@ -670,7 +670,7 @@ GPU allocation or network transfer.
 ### 8.2 Build-Side Overhead Per Task
 
 Each build-side task processes one partition of the build child stream. For `K`
-bloom filter specs in one `GpuGenerateBloomFilterExec`, the persistent GPU
+bloom filter specs in one `GpuGenerateCuBFExec`, the persistent GPU
 memory during the task lifetime is:
 
 ```
@@ -967,7 +967,7 @@ Validation should cover both execution contracts and inertness:
 | Skip/no-op behavior | The skip sentinel wins over real bytes and is distinguishable from valid bloom filter bytes. |
 | Multi-spec build contract | One build node registers one accumulator per spec and avoids cross-contamination between `bfId` values. |
 | Replacement reflection | Test-only stubs exercise multi-spec and legacy single-spec marker shapes without optional classpath dependencies. |
-| Already-GPU planning | `GpuGenerateBloomFilterExec` survives `GpuOverrides` as an already-GPU node. |
+| Already-GPU planning | `GpuGenerateCuBFExec` survives `GpuOverrides` as an already-GPU node. |
 | Inert planning | Plans with no CuBF markers are unchanged by pre-`GpuOverrides` rules. |
 | Probe metadata | Optional `bfId` and updater wiring does not affect canonicalization or normal predicate behavior. |
 | Spark OSS regression | Existing runtime bloom filter tests for Spark `InjectRuntimeFilter` continue to pass unchanged. |
