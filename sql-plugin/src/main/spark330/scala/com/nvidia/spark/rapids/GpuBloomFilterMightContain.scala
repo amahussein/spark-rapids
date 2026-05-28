@@ -50,6 +50,7 @@ import ai.rapids.cudf.DType
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource, withResourceIfAllowed}
 import com.nvidia.spark.rapids.RapidsPluginImplicits.ReallyAGpuExpression
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
+import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
 import com.nvidia.spark.rapids.shims.ShimBinaryExpression
 
 import org.apache.spark.TaskContext
@@ -65,7 +66,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  * `bfId` and `probeUpdater` are optional cuBF diagnostic wiring, not predicate semantics. The
  * private optimizer can wrap the bloom-filter subquery in `TryReadBFRegistryExec`; when
  * `spark.rapids.sql.cubf.diagnosticMetrics.enabled` is true, `CuBFProbeDiagWiring` reads that
- * marker and creates a driver-side `BloomFilterProbeAccumulator` consumed through Spark
+ * marker and creates a driver-side `CuBFDiagPairMetric` consumed through Spark
  * accumulator UI/event logs. Without that marker, both fields remain `None` and this expression
  * behaves like the standard OSS replacement.
  */
@@ -73,7 +74,7 @@ case class GpuBloomFilterMightContain(
     bloomFilterExpression: Expression,
     valueExpression: Expression,
     bfId: Option[String] = None,
-    probeUpdater: Option[BloomFilterPredicateUpdater] = None)
+    probeUpdater: Option[CuBFDiagPairMetric] = None)
   extends ShimBinaryExpression with GpuExpression with AutoCloseable {
 
   @transient private lazy val bloomFilter: GpuBloomFilter = {

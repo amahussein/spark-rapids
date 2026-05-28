@@ -43,6 +43,8 @@ package com.nvidia.spark.rapids
 
 import scala.util.control.NonFatal
 
+import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -94,8 +96,8 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
 
   /** Creates diagnostic build-cost updaters when cuBF markers carry bfIds. */
   private[rapids] def resolveBuildCostUpdaters(
-      bfIds: Seq[String]): Map[String, BloomFilterBuildCostUpdater] = {
-    val usableBfIds = bfIds.filter(BloomFilterLongPairAccumulator.isUsableBfId)
+      bfIds: Seq[String]): Map[String, CuBFDiagPairMetric] = {
+    val usableBfIds = bfIds.filter(CuBFDiagPairMetric.isUsableBfId)
     if (usableBfIds.isEmpty ||
         !RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.get(SQLConf.get)) {
       return Map.empty
@@ -103,9 +105,8 @@ case class InlineBFBuildReplacement() extends Rule[SparkPlan] with Logging {
     SparkSession.getActiveSession match {
       case Some(spark) =>
         usableBfIds.map { bfId =>
-          val acc = BloomFilterBuildCostAccumulator
-            .driverGetOrCreate(spark.sparkContext, bfId)
-          bfId -> (acc: BloomFilterBuildCostUpdater)
+          val acc = CuBFDiagPairMetric.buildForBfId(spark.sparkContext, bfId)
+          bfId -> acc
         }.toMap
       case None => Map.empty
     }

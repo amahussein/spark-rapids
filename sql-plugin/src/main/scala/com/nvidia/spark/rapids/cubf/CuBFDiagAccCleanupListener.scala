@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.nvidia.spark.rapids
+package com.nvidia.spark.rapids.cubf
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent}
@@ -26,11 +26,10 @@ class CuBFDiagAccCleanupListener extends SparkListener with Logging {
   override def onOtherEvent(event: SparkListenerEvent): Unit = {
     event match {
       case e: SparkListenerSQLExecutionEnd =>
-        val buildRemoved = BloomFilterBuildCostAccumulator.removeForExecution(e.executionId)
-        val probeRemoved = BloomFilterProbeAccumulator.removeForExecution(e.executionId)
-        if (buildRemoved > 0 || probeRemoved > 0) {
+        val removed = CuBFDiagPairMetric.removeForExecution(e.executionId)
+        if (removed.total > 0) {
           logDebug(s"[CuBF-DiagAcc] SQLExecution ${e.executionId} ended, removed " +
-            s"$buildRemoved build and $probeRemoved probe accumulator cache entries")
+            s"${removed.build} build and ${removed.probe} probe accumulator cache entries")
         }
       case _ => // ignore
     }

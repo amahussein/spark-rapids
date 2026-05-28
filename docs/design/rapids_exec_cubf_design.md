@@ -292,7 +292,7 @@ Shared build-exec parameters:
 | `bfVersion` | `Int` | Bloom filter format version. Version 1 is used by Spark 3.x; version 2 is used by Spark 4.x and carries an additional seed field in the serialized header. |
 | `seed` | `Int` | Bloom filter hash seed used by version 2 serialized bloom filters; version 1 uses `0`. |
 | `xxHashSeed` | `Long` | XxHash64 seed used for build keys. This must match the probe-side hash used by `BloomFilterMightContain`. |
-| `buildCostUpdaters` | `Map[String, BloomFilterBuildCostUpdater]` | Optional per-`bfId` build-cost update sinks. The default is `Map.empty`, keeping build-cost instrumentation inert. |
+| `buildCostUpdaters` | `Map[String, CuBFDiagPairMetric]` | Optional per-`bfId` build-cost update sinks. The default is `Map.empty`, keeping build-cost instrumentation inert. |
 
 ```
        build-side ColumnarBatch iterator
@@ -450,11 +450,10 @@ The core probe expression remains `GpuBloomFilterMightContain`. CuBF adds
 optional metadata plumbing around that existing expression:
 
 - `bfId` identifies the CuBF bloom filter associated with a probe predicate.
-- `BloomFilterPredicateUpdater` can receive per-batch `(rowsIn, rowsPassed)`
-  updates.
-- `BloomFilterProbeAccumulator` can aggregate those updates on the driver.
-- `BloomFilterBuildCostAccumulator` can aggregate build-side
-  `(buildWallNanos, bfBytes)` updates.
+- `CuBFDiagPairMetric.probeForBfId` receives and aggregates per-batch
+  `(rowsIn, rowsPassed)` updates on the driver.
+- `CuBFDiagPairMetric.buildForBfId` receives and aggregates build-side
+  `(buildWallNanos, bfBytes)` updates on the driver.
 
 These hooks are diagnostic-only and default to absent. They are enabled only
 when `spark.rapids.sql.cubf.diagnosticMetrics.enabled=true` and the `bfId` can
@@ -499,8 +498,8 @@ GpuBloomFilterMightContain
                         standard OSS replacement behavior
 ```
 
-`BloomFilterBuildCostAccumulator.driverGetOrCreate` and
-`BloomFilterProbeAccumulator.driverGetOrCreate` keep driver-side static caches
+`CuBFDiagPairMetric.buildForBfId` and
+`CuBFDiagPairMetric.probeForBfId` keep driver-side static caches
 keyed by `(SQL execution id, bfId)`. Registered accumulator names include the
 execution id, for example `cubf_build_<executionId>_<bfId>` and
 `cubf_probe_<executionId>_<bfId>`, so repeated content-addressed `bfId` values
@@ -715,7 +714,7 @@ kernel launch overhead is roughly 5 to 10 microseconds each. For `K=3` and 50
 batches per partition, that is 300 launches, or about 1.5 to 3 ms total, which
 is negligible relative to batch processing time.
 
-Build wall time reported via `BloomFilterBuildCostUpdater` is
+Build wall time reported via build-side `CuBFDiagPairMetric` updates is
 partition-level (one measurement per task), shared across all specs
 in the operator. With K specs per operator, the same wall-time
 value appears in K updater calls. Driver-side cost analysis must
@@ -1103,8 +1102,7 @@ which is negligible. For 5 concurrent build execs with `K=3` at 8 MB each:
 
 ### 11.4 Diagnostic Accumulator Cache Lifecycle
 
-**Risk.** `BloomFilterBuildCostAccumulator.cache` and
-`BloomFilterProbeAccumulator.cache` are static `ConcurrentHashMap` instances.
+**Risk.** `CuBFDiagPairMetric` keeps static build/probe `ConcurrentHashMap` caches.
 If keyed only by `bfId`, repeated queries in a long-running driver could retain
 one accumulator object per distinct bloom filter id indefinitely.
 

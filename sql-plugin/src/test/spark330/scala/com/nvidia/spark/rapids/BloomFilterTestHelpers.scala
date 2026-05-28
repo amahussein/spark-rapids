@@ -85,32 +85,6 @@ object BloomFilterTestHelpers {
     buf(offset + 2) = ((value >>>  8) & 0xFF).toByte
     buf(offset + 3) = ( value         & 0xFF).toByte
   }
-
-  abstract class AbstractCountingSpy {
-    var invocationCount: Int = 0
-  }
-
-  final class CountingPredicateUpdater
-      extends AbstractCountingSpy with BloomFilterPredicateUpdater {
-    var lastRowsIn: Long = -1L
-    var lastRowsPassed: Long = -1L
-    override def update(rowsIn: Long, rowsPassed: Long): Unit = {
-      invocationCount += 1
-      lastRowsIn = rowsIn
-      lastRowsPassed = rowsPassed
-    }
-  }
-
-  final class CountingBuildUpdater
-      extends AbstractCountingSpy with BloomFilterBuildCostUpdater {
-    var lastBuildWallNanos: Long = -1L
-    var lastBfBytes: Long = -1L
-    override def update(buildWallNanos: Long, bfBytes: Long): Unit = {
-      invocationCount += 1
-      lastBuildWallNanos = buildWallNanos
-      lastBfBytes = bfBytes
-    }
-  }
 }
 
 /** Reflection-target shapes for `InlineBFBuildReplacement.readSpecs`. */

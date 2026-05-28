@@ -66,7 +66,8 @@ package com.nvidia.spark.rapids.shims {
   import org.apache.spark.sql.execution.{BinaryExecNode, LeafExecNode, SparkPlan, SubqueryExec,
     UnaryExecNode}
 
-  import com.nvidia.spark.rapids.{BloomFilterProbeAccumulator, CuBFLocalSparkSuite, RapidsConf}
+  import com.nvidia.spark.rapids.{CuBFLocalSparkSuite, RapidsConf}
+  import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
   import com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec
 
   /** Regression coverage for AQE-aware `findBfIdInPlan`. */
@@ -180,7 +181,7 @@ package com.nvidia.spark.rapids.shims {
     }
 
     test("probe diagnostic wiring requires a private marker and usable bfId") {
-      BloomFilterProbeAccumulator.clearAllForTests()
+      CuBFDiagPairMetric.clearAllForTests()
       try {
         withSqlConf(RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.key -> "true") {
           withSqlExecutionId(401L) {
@@ -195,7 +196,7 @@ package com.nvidia.spark.rapids.shims {
               assert(invalidBfId.isEmpty)
               assert(invalidUpdater.isEmpty)
             }
-            assert(BloomFilterProbeAccumulator.cacheSizeForTests === 0)
+            assert(CuBFDiagPairMetric.probeCacheSize === 0)
           }
 
           withSqlExecutionId(402L) {
@@ -203,11 +204,11 @@ package com.nvidia.spark.rapids.shims {
               CuBFProbeDiagWiring.resolveProbeWiring(probeExpression("cubf-probe-ok"))
             assert(validBfId.contains("cubf-probe-ok"))
             assert(validUpdater.isDefined)
-            assert(BloomFilterProbeAccumulator.containsForTests(402L, "cubf-probe-ok"))
+            assert(CuBFDiagPairMetric.probeContains(402L, "cubf-probe-ok"))
           }
         }
       } finally {
-        BloomFilterProbeAccumulator.clearAllForTests()
+        CuBFDiagPairMetric.clearAllForTests()
       }
     }
 

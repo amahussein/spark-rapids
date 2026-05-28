@@ -44,6 +44,7 @@ package com.nvidia.spark.rapids
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 
 import com.nvidia.spark.rapids.BloomFilterTestHelpers._
+import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.execution.SparkPlan
@@ -211,36 +212,26 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
     // Each task ships its own long-pair accumulator back to the driver, where Spark folds them
     // into the driver-side aggregate via `merge`. The contract is that both pair components add
     // and that the source instance is not observed to change after a merge into a sibling.
-    val driverBuild = new BloomFilterBuildCostAccumulator
-    val partitionBuild = new BloomFilterBuildCostAccumulator
-    driverBuild.update(buildWallNanos = 7L, bfBytes = 11L)
-    partitionBuild.update(buildWallNanos = 13L, bfBytes = 17L)
-    driverBuild.merge(partitionBuild)
-    assert(driverBuild.value == ((20L, 28L)),
-      s"merge must sum both components, got ${driverBuild.value}")
-    assert(partitionBuild.value == ((13L, 17L)),
-      s"merge must not mutate the source accumulator, got ${partitionBuild.value}")
-
-    val driverProbe = new BloomFilterProbeAccumulator
-    val partitionProbe = new BloomFilterProbeAccumulator
-    driverProbe.update(rowsIn = 100L, rowsPassed = 80L)
-    partitionProbe.update(rowsIn = 25L, rowsPassed = 20L)
-    driverProbe.merge(partitionProbe)
-    assert(driverProbe.value == ((125L, 100L)),
-      s"merge must sum both components, got ${driverProbe.value}")
-    assert(partitionProbe.value == ((25L, 20L)),
-      s"merge must not mutate the source accumulator, got ${partitionProbe.value}")
+    val driverMetric = new CuBFDiagPairMetric
+    val partitionMetric = new CuBFDiagPairMetric
+    driverMetric.update(7L, 11L)
+    partitionMetric.update(13L, 17L)
+    driverMetric.merge(partitionMetric)
+    assert(driverMetric.value == ((20L, 28L)),
+      s"merge must sum both components, got ${driverMetric.value}")
+    assert(partitionMetric.value == ((13L, 17L)),
+      s"merge must not mutate the source accumulator, got ${partitionMetric.value}")
   }
 
   test("build diagnostic updaters require diagnostic config and non-empty bfIds") {
-    BloomFilterBuildCostAccumulator.clearAllForTests()
+    CuBFDiagPairMetric.clearAllForTests()
     try {
       withSqlConf(RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.key -> "false") {
         withSqlExecutionId(301L) {
           val updaters = InlineBFBuildReplacement()
             .resolveBuildCostUpdaters(Seq("bf-diag-off"))
           assert(updaters.isEmpty)
-          assert(BloomFilterBuildCostAccumulator.cacheSizeForTests === 0)
+          assert(CuBFDiagPairMetric.buildCacheSize === 0)
         }
       }
 
@@ -249,18 +240,18 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
           val updaters = InlineBFBuildReplacement()
             .resolveBuildCostUpdaters(Seq("", "cubf-", "bf-diag-on"))
           assert(updaters.keySet === Set("bf-diag-on"))
-          assert(BloomFilterBuildCostAccumulator.containsForTests(302L, "bf-diag-on"))
-          assert(!BloomFilterBuildCostAccumulator.containsForTests(302L, ""))
-          assert(!BloomFilterBuildCostAccumulator.containsForTests(302L, "cubf-"))
+          assert(CuBFDiagPairMetric.buildContains(302L, "bf-diag-on"))
+          assert(!CuBFDiagPairMetric.buildContains(302L, ""))
+          assert(!CuBFDiagPairMetric.buildContains(302L, "cubf-"))
         }
         withSqlExecutionId(303L) {
           val updaters = InlineBFBuildReplacement().resolveBuildCostUpdaters(Seq.empty)
           assert(updaters.isEmpty)
-          assert(!BloomFilterBuildCostAccumulator.containsForTests(303L, ""))
+          assert(!CuBFDiagPairMetric.buildContains(303L, ""))
         }
       }
     } finally {
-      BloomFilterBuildCostAccumulator.clearAllForTests()
+      CuBFDiagPairMetric.clearAllForTests()
     }
   }
 
@@ -283,24 +274,22 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       s"unexpected message: ${ex.getMessage}")
   }
 
-  test("recordBuildUpdate invokes updater exactly once per BF build") {
-    val spy = new CountingBuildUpdater
+  test("recordBuildUpdate records one pair per BF build") {
+    val metric = new CuBFDiagPairMetric
     val exec = GpuGenerateBloomFilterExec(
       specs = Seq(BFSpec("cubf-r7-single", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild(),
-      buildCostUpdaters = Map("cubf-r7-single" -> spy))
+      buildCostUpdaters = Map("cubf-r7-single" -> metric))
     exec.recordBuildUpdate("cubf-r7-single", 12345678L, 4096L)
-    assert(spy.invocationCount === 1,
-      "update must fire once per BF build, never per batch or per row")
-    assert(spy.lastBuildWallNanos === 12345678L)
-    assert(spy.lastBfBytes === 4096L)
+    assert(metric.value === ((12345678L, 4096L)),
+      "metric must record one BF build update, never per batch or per row")
   }
 
-  test("multi-BF build invokes each updater exactly once") {
-    val spyA = new CountingBuildUpdater
-    val spyB = new CountingBuildUpdater
-    val spyC = new CountingBuildUpdater
+  test("multi-BF build records each metric independently") {
+    val metricA = new CuBFDiagPairMetric
+    val metricB = new CuBFDiagPairMetric
+    val metricC = new CuBFDiagPairMetric
     val exec = GpuGenerateBloomFilterExec(
       specs = Seq(
         BFSpec("cubf-r7-A", 0, 5, 100000L),
@@ -309,52 +298,49 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild(),
       buildCostUpdaters = Map(
-        "cubf-r7-A" -> spyA,
-        "cubf-r7-B" -> spyB,
-        "cubf-r7-C" -> spyC))
+        "cubf-r7-A" -> metricA,
+        "cubf-r7-B" -> metricB,
+        "cubf-r7-C" -> metricC))
     exec.recordBuildUpdate("cubf-r7-A", 100L, 1024L)
     exec.recordBuildUpdate("cubf-r7-B", 200L, 2048L)
     exec.recordBuildUpdate("cubf-r7-C", 300L, 4096L)
-    assert(spyA.invocationCount === 1)
-    assert(spyB.invocationCount === 1)
-    assert(spyC.invocationCount === 1)
-    assert((spyA.lastBuildWallNanos, spyA.lastBfBytes) === ((100L, 1024L)))
-    assert((spyB.lastBuildWallNanos, spyB.lastBfBytes) === ((200L, 2048L)))
-    assert((spyC.lastBuildWallNanos, spyC.lastBfBytes) === ((300L, 4096L)))
+    assert(metricA.value === ((100L, 1024L)))
+    assert(metricB.value === ((200L, 2048L)))
+    assert(metricC.value === ((300L, 4096L)))
   }
 
   test("recordBuildUpdate is a no-op when buildCostUpdaters is empty") {
-    // A spy wired to a sibling exec must not see invocations from the
+    // A metric wired to a sibling exec must not see invocations from the
     // empty-map exec. Catches Map.get -> Map.apply refactors and any
     // future cross-instance side-effect leak.
-    val spy = new CountingBuildUpdater
+    val metric = new CuBFDiagPairMetric
     val sibling = GpuGenerateBloomFilterExec(
       specs = Seq(BFSpec("cubf-active", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild(),
-      buildCostUpdaters = Map("cubf-active" -> spy))
+      buildCostUpdaters = Map("cubf-active" -> metric))
     val target = GpuGenerateBloomFilterExec(
       specs = Seq(BFSpec("cubf-no-updater", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild())
     target.recordBuildUpdate("cubf-no-updater", 1000000L, 8192L)
-    assert(spy.invocationCount === 0,
-      "empty buildCostUpdaters path must not fire any other exec's updater")
-    // Sanity check: the spy fires for its own owner.
+    assert(metric.value === ((0L, 0L)),
+      "empty buildCostUpdaters path must not fire any other exec's metric")
+    // Sanity check: the metric fires for its own owner.
     sibling.recordBuildUpdate("cubf-active", 1L, 1L)
-    assert(spy.invocationCount === 1)
+    assert(metric.value === ((1L, 1L)))
   }
 
   test("recordBuildUpdate is a no-op when bfId is not in the map") {
-    val spy = new CountingBuildUpdater
+    val metric = new CuBFDiagPairMetric
     val exec = GpuGenerateBloomFilterExec(
       specs = Seq(BFSpec("cubf-known", 0, 5, 100000L)),
       bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = stubChild(),
-      buildCostUpdaters = Map("cubf-known" -> spy))
+      buildCostUpdaters = Map("cubf-known" -> metric))
     exec.recordBuildUpdate("cubf-unknown", 1000L, 512L)
-    assert(spy.invocationCount === 0,
-      "updater must not fire for an unknown bfId")
+    assert(metric.value === ((0L, 0L)),
+      "metric must not update for an unknown bfId")
   }
 
   test("isNeeded returns false for plan without markers") {
@@ -425,19 +411,19 @@ class GpuGenerateBloomFilterExecSuite extends AnyFunSuite
 
   test("buildCostUpdaters do not break canonical transparency") {
     val child = stubChild()
-    val spy1 = new CountingBuildUpdater
-    val spy2 = new CountingBuildUpdater
+    val metric1 = new CuBFDiagPairMetric
+    val metric2 = new CuBFDiagPairMetric
     val specs = Seq(
       BFSpec("bf-A", 0, 5, 100000L),
       BFSpec("bf-B", 1, 5, 100000L))
     val with1 = GpuGenerateBloomFilterExec(
       specs = specs, bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = child,
-      buildCostUpdaters = Map("bf-A" -> spy1, "bf-B" -> spy1))
+      buildCostUpdaters = Map("bf-A" -> metric1, "bf-B" -> metric1))
     val with2 = GpuGenerateBloomFilterExec(
       specs = specs, bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = child,
-      buildCostUpdaters = Map("bf-A" -> spy2, "bf-B" -> spy2))
+      buildCostUpdaters = Map("bf-A" -> metric2, "bf-B" -> metric2))
     val without = GpuGenerateBloomFilterExec(
       specs = specs, bfVersion = 1, seed = 0, xxHashSeed = 42L,
       child = child)

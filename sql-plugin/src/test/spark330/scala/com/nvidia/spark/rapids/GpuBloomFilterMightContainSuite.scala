@@ -41,7 +41,7 @@
 spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids
 
-import com.nvidia.spark.rapids.BloomFilterTestHelpers.CountingPredicateUpdater
+import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.expressions.Literal
@@ -52,7 +52,7 @@ class GpuBloomFilterMightContainSuite extends AnyFunSuite {
 
   private def newExpr(
       bfId: Option[String],
-      updater: Option[BloomFilterPredicateUpdater]): GpuBloomFilterMightContain = {
+      updater: Option[CuBFDiagPairMetric]): GpuBloomFilterMightContain = {
     GpuBloomFilterMightContain(
       bloomFilterExpression = Literal(null, BinaryType),
       valueExpression = Literal(0L, LongType),
@@ -60,46 +60,44 @@ class GpuBloomFilterMightContainSuite extends AnyFunSuite {
       probeUpdater = updater)
   }
 
-  test("recordBatchUpdate invokes updater exactly once per call") {
-    val spy = new CountingPredicateUpdater
-    val expr = newExpr(bfId = Some("cubf-test-r7"), updater = Some(spy))
+  test("recordBatchUpdate records one pair per call") {
+    val metric = new CuBFDiagPairMetric
+    val expr = newExpr(bfId = Some("cubf-test-r7"), updater = Some(metric))
     expr.recordBatchUpdate(1000000L, 700000L)
-    assert(spy.invocationCount === 1, "update must fire once per batch, never per row")
-    assert(spy.lastRowsIn === 1000000L)
-    assert(spy.lastRowsPassed === 700000L)
+    assert(metric.value === ((1000000L, 700000L)),
+      "metric must record one predicate batch update, never per row")
   }
 
-  test("multi-batch invocation count matches batch count") {
-    val spy = new CountingPredicateUpdater
-    val expr = newExpr(bfId = Some("cubf-test-multi"), updater = Some(spy))
+  test("multi-batch updates sum the pair components") {
+    val metric = new CuBFDiagPairMetric
+    val expr = newExpr(bfId = Some("cubf-test-multi"), updater = Some(metric))
     expr.recordBatchUpdate(500000L, 350000L)
     expr.recordBatchUpdate(500000L, 200000L)
     expr.recordBatchUpdate(500000L, 150000L)
-    assert(spy.invocationCount === 3, "3 batches produce 3 update calls")
-    assert(spy.lastRowsIn === 500000L)
-    assert(spy.lastRowsPassed === 150000L)
+    assert(metric.value === ((1500000L, 700000L)),
+      "3 batches must produce the summed rows-in and rows-passed pair")
   }
 
   test("recordBatchUpdate is a no-op when probeUpdater is None") {
-    // A spy wired to a sibling expression must not see invocations from the
+    // A metric wired to a sibling expression must not see invocations from the
     // None-updater expression. Catches .foreach -> .get refactors and any
     // future cross-instance side-effect leak.
-    val spy = new CountingPredicateUpdater
-    val sibling = newExpr(bfId = Some("cubf-active"), updater = Some(spy))
+    val metric = new CuBFDiagPairMetric
+    val sibling = newExpr(bfId = Some("cubf-active"), updater = Some(metric))
     val target = newExpr(bfId = Some("cubf-no-updater"), updater = None)
     target.recordBatchUpdate(1000000L, 700000L)
-    assert(spy.invocationCount === 0,
-      "None-updater path must not fire any other expression's updater")
-    // Sanity check: the spy fires for its own owner.
+    assert(metric.value === ((0L, 0L)),
+      "None-updater path must not fire any other expression's metric")
+    // Sanity check: the metric fires for its own owner.
     sibling.recordBatchUpdate(1L, 1L)
-    assert(spy.invocationCount === 1)
+    assert(metric.value === ((1L, 1L)))
   }
 
   test("canonicalized drops bfId so distinct instances compare equal") {
-    val spy1 = new CountingPredicateUpdater
-    val spy2 = new CountingPredicateUpdater
-    val a = newExpr(bfId = Some("cubf-aaaa"), updater = Some(spy1))
-    val b = newExpr(bfId = Some("cubf-bbbb"), updater = Some(spy2))
+    val metric1 = new CuBFDiagPairMetric
+    val metric2 = new CuBFDiagPairMetric
+    val a = newExpr(bfId = Some("cubf-aaaa"), updater = Some(metric1))
+    val b = newExpr(bfId = Some("cubf-bbbb"), updater = Some(metric2))
     val c = newExpr(bfId = None, updater = None)
     assert(a.canonicalized == b.canonicalized,
       "bfId difference must be erased by canonicalize")
@@ -108,8 +106,8 @@ class GpuBloomFilterMightContainSuite extends AnyFunSuite {
   }
 
   test("canonicalized leaves bfId / probeUpdater as None") {
-    val spy = new CountingPredicateUpdater
-    val a = newExpr(bfId = Some("cubf-xyz"), updater = Some(spy))
+    val metric = new CuBFDiagPairMetric
+    val a = newExpr(bfId = Some("cubf-xyz"), updater = Some(metric))
     val canon = a.canonicalized.asInstanceOf[GpuBloomFilterMightContain]
     assert(canon.bfId.isEmpty)
     assert(canon.probeUpdater.isEmpty)

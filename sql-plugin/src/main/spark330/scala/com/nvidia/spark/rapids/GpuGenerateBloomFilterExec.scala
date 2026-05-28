@@ -43,6 +43,7 @@ package com.nvidia.spark.rapids
 
 import ai.rapids.cudf.{ColumnView, HostMemoryBuffer, Scalar}
 import com.nvidia.spark.rapids.Arm.withResource
+import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
 import com.nvidia.spark.rapids.jni.{BloomFilter, Hash}
 import com.nvidia.spark.rapids.shims.ShimUnaryExecNode
 
@@ -72,7 +73,7 @@ case class GpuGenerateBloomFilterExec(
     seed: Int,
     xxHashSeed: Long,
     child: SparkPlan,
-    buildCostUpdaters: Map[String, BloomFilterBuildCostUpdater] = Map.empty)
+    buildCostUpdaters: Map[String, CuBFDiagPairMetric] = Map.empty)
     extends ShimUnaryExecNode with GpuExec with Logging {
 
   require(specs.nonEmpty,

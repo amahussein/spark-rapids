@@ -49,8 +49,8 @@ package com.nvidia.spark.rapids.shims
 import scala.collection.mutable
 import scala.util.control.NonFatal
 
-import com.nvidia.spark.rapids.{BloomFilterLongPairAccumulator, BloomFilterPredicateUpdater,
-  BloomFilterProbeAccumulator, RapidsConf}
+import com.nvidia.spark.rapids.RapidsConf
+import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.Expression
@@ -144,18 +144,18 @@ private[shims] object CuBFProbeDiagWiring {
 
   def resolveProbeWiring(
       bloomFilterExpression: Expression
-  ): (Option[String], Option[BloomFilterPredicateUpdater]) = {
+  ): (Option[String], Option[CuBFDiagPairMetric]) = {
     if (!RapidsConf.CUBF_DIAGNOSTIC_METRICS_ENABLED.get(SQLConf.get)) {
       (None, None)
     } else {
       // Diagnostic-only wiring: carry the planner bfId to GpuBloomFilterMightContain and
       // attach a probe accumulator for Spark UI/event-log observability.
       val bfIdOpt = CuBFPlanInspector.extractBfId(bloomFilterExpression)
-        .filter(BloomFilterLongPairAccumulator.isUsableBfId)
+        .filter(CuBFDiagPairMetric.isUsableBfId)
       val updaterOpt = for {
         bfId <- bfIdOpt
         spark <- SparkSession.getActiveSession
-      } yield BloomFilterProbeAccumulator.driverGetOrCreate(spark.sparkContext, bfId)
+      } yield CuBFDiagPairMetric.probeForBfId(spark.sparkContext, bfId)
       (bfIdOpt, updaterOpt)
     }
   }
