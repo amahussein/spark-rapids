@@ -52,7 +52,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.internal.SQLConf
 
 /**
- * Replaces the optional planner's InlineBFBuildExec with `GpuGenerateCuBFExec`.
+ * Replaces the optional planner's InlineCuBFBuildExec with `GpuGenerateCuBFExec`.
  *
  * Reflection keeps this rule inert when the planner module is absent.
  */
@@ -62,7 +62,7 @@ case class InlineCuBFBuildReplacement() extends Rule[SparkPlan] with Logging {
 
   override def apply(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
-      case exec if exec.getClass.getName == inlineBFClassName =>
+      case exec if exec.getClass.getName == inlineCuBFClassName =>
         replaceWithGpu(exec)
     }
   }
@@ -78,7 +78,7 @@ case class InlineCuBFBuildReplacement() extends Rule[SparkPlan] with Logging {
       val keyIdxCsv = specs.map(_.keyColumnIndex).mkString(",")
       val numHashesCsv = specs.map(_.numHashes).mkString(",")
       val numBitsCsv = specs.map(_.numBits).mkString(",")
-      logInfo(s"[CuBF-GpuOverride] Replacing InlineBFBuildExec " +
+      logInfo(s"[CuBF-GpuOverride] Replacing InlineCuBFBuildExec " +
         s"with GpuGenerateCuBFExec bfIds=[$bfIdsCsv] " +
         s"keyIdxes=[$keyIdxCsv] numHashes=[$numHashesCsv] " +
         s"numBits=[$numBitsCsv] version=$bfVersion")
@@ -88,7 +88,7 @@ case class InlineCuBFBuildReplacement() extends Rule[SparkPlan] with Logging {
     } catch {
       case NonFatal(e) =>
         logWarning(s"[CuBF-GpuOverride] Failed to replace " +
-          s"InlineBFBuildExec: ${e.getMessage}. " +
+          s"InlineCuBFBuildExec: ${e.getMessage}. " +
           s"Keeping CPU stub (BF will not be built).")
         exec
     }
@@ -129,7 +129,7 @@ case class InlineCuBFBuildReplacement() extends Rule[SparkPlan] with Logging {
             numBits = getField[Long](specObj, "numBits"))
         }.toSeq
       case None =>
-        // Legacy single-spec InlineBFBuildExec shape.
+        // Legacy single-spec InlineCuBFBuildExec shape.
         val legacySpec = CuBFSpec(
           bfId = getField[String](exec, "bfId"),
           keyColumnIndex = getField[Int](exec, "keyColumnIndex"),
@@ -147,8 +147,8 @@ case class InlineCuBFBuildReplacement() extends Rule[SparkPlan] with Logging {
 
 object InlineCuBFBuildReplacement {
   // Fully qualified class name of the optional planner's CPU stub.
-  private val inlineBFClassName =
-    "com.nvidia.spark.rapids.optimizer.cubloomfilter.InlineBFBuildExec"
+  private val inlineCuBFClassName =
+    "com.nvidia.spark.rapids.optimizer.cubf.InlineCuBFBuildExec"
 
   def applyIfNeeded(plan: SparkPlan): SparkPlan = {
     if (isNeeded(plan)) {
@@ -160,6 +160,6 @@ object InlineCuBFBuildReplacement {
 
   // Avoid transformUp unless the optional inline-build node is present.
   def isNeeded(plan: SparkPlan): Boolean = {
-    plan.find(_.getClass.getName == inlineBFClassName).isDefined
+    plan.find(_.getClass.getName == inlineCuBFClassName).isDefined
   }
 }

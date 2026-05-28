@@ -270,8 +270,8 @@ case class GpuGenerateCuBFExec(
 
 object GpuGenerateCuBFExec extends Logging {
 
-  private val SparkVersionBFCapsClassName =
-    "com.nvidia.spark.rapids.optimizer.cubloomfilter.SparkVersionBFCaps$"
+  private val SparkVersionCuBFCapsClassName =
+    "com.nvidia.spark.rapids.optimizer.cubf.SparkVersionCuBFCaps$"
 
   /** V1 BloomFilterImpl indexing ceiling, used when planner caps are unavailable. */
   private val V1IndexingCeilingBytes: Long = (1L << 31) / 8L
@@ -283,7 +283,7 @@ object GpuGenerateCuBFExec extends Logging {
   // Resolve the planner-provided BF byte cap; fallback keeps overshoot checks fail-closed.
   def resolveEffectiveMaxFilterBytes(): Long = {
     try {
-      val cls = Class.forName(SparkVersionBFCapsClassName)
+      val cls = Class.forName(SparkVersionCuBFCapsClassName)
       val module = cls.getField("MODULE$").get(null)
       val method = cls.getMethod("effectiveMaxFilterBytes", classOf[Long])
       method.invoke(module, java.lang.Long.valueOf(Long.MaxValue))
@@ -291,7 +291,7 @@ object GpuGenerateCuBFExec extends Logging {
     } catch {
       case e: Throwable =>
         logWarning(s"[CuBF-GpuGenerate] Could not resolve " +
-          s"SparkVersionBFCaps.effectiveMaxFilterBytes via reflection: " +
+          s"SparkVersionCuBFCaps.effectiveMaxFilterBytes via reflection: " +
           s"${e.getMessage}. Falling back to V1 ceiling " +
           s"($V1IndexingCeilingBytes bytes).")
         V1IndexingCeilingBytes

@@ -330,7 +330,7 @@ class GpuGenerateCuBFExecSuite extends AnyFunSuite
   test("isNeeded returns false for plan without markers") {
     val plan = spark.range(10).queryExecution.executedPlan
     assert(!InlineCuBFBuildReplacement.isNeeded(plan),
-      "isNeeded must return false when no InlineBFBuildExec markers are present")
+      "isNeeded must return false when no InlineCuBFBuildExec markers are present")
   }
 
   test("applyIfNeeded returns plan unchanged when no markers are present") {

@@ -56,8 +56,8 @@ import org.apache.spark.sql.internal.SQLConf
 private[cubf] object CuBFPlanInspector {
 
   // Optional planner leaf that carries the bfId for metrics wiring.
-  private val TryReadBFRegistryExecClassName =
-    "com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec"
+  private val TryReadCuBFRegistryExecClassName =
+    "com.nvidia.spark.rapids.optimizer.cubf.TryReadCuBFRegistryExec"
 
   private val AqePlanFields: Seq[String] =
     Seq("executedPlan", "currentPhysicalPlan", "initialPlan", "inputPlan")
@@ -73,10 +73,10 @@ private[cubf] object CuBFPlanInspector {
   }
 
   /**
-   * Contract: `CuBloomFilterPostDPPRule` applies global candidate ranking and the per-query BF
+   * Contract: `CuBFPostDPPRule` applies global candidate ranking and the per-query BF
    * quota before injection. Each selected probe predicate gets its own `BloomFilterMightContain`
-   * scalar subquery with at most one `TryReadBFRegistryExec`. Multi-key fact-side stacking may put
-   * multiple probe predicates on one child, and older single-BF shapes may put just one, but a
+   * scalar subquery with at most one `TryReadCuBFRegistryExec`. Multi-key fact-side stacking may
+   * put multiple probe predicates on one child, and older single-BF shapes may put just one, but a
    * single scalar subquery must never contain multiple registry reads. If a future planner shape
    * violates that invariant, diagnostic attribution is ambiguous.
    */
@@ -94,7 +94,7 @@ private[cubf] object CuBFPlanInspector {
       new java.util.IdentityHashMap[SparkPlan, java.lang.Boolean]())
     def visit(p: SparkPlan): Unit = {
       if (p != null && visited.add(p)) {
-        if (p.getClass.getName == TryReadBFRegistryExecClassName) {
+        if (p.getClass.getName == TryReadCuBFRegistryExecClassName) {
           readBfId(p).foreach(found += _)
         }
         p match {

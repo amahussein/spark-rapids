@@ -41,7 +41,7 @@
 spark-rapids-shim-json-lines ***/
 
 // Test-scope stub for the optional planner class discovered by fully qualified class name.
-package com.nvidia.spark.rapids.optimizer.cubloomfilter {
+package com.nvidia.spark.rapids.optimizer.cubf {
 
   import org.apache.spark.rdd.RDD
   import org.apache.spark.sql.catalyst.InternalRow
@@ -49,7 +49,7 @@ package com.nvidia.spark.rapids.optimizer.cubloomfilter {
   import org.apache.spark.sql.execution.LeafExecNode
 
   /** Test-only stub for the optional planner class discovered by fully qualified class name. */
-  case class TryReadBFRegistryExec(bfId: String) extends LeafExecNode {
+  case class TryReadCuBFRegistryExec(bfId: String) extends LeafExecNode {
     override def output: Seq[Attribute] = Seq.empty
     override protected def doExecute(): RDD[InternalRow] =
       throw new UnsupportedOperationException("test stub")
@@ -67,7 +67,7 @@ package com.nvidia.spark.rapids.cubf {
     UnaryExecNode}
 
   import com.nvidia.spark.rapids.{CuBFLocalSparkSuite, RapidsConf}
-  import com.nvidia.spark.rapids.optimizer.cubloomfilter.TryReadBFRegistryExec
+  import com.nvidia.spark.rapids.optimizer.cubf.TryReadCuBFRegistryExec
 
   /** Regression coverage for AQE-aware `findBfIdInPlan`. */
   class CuBFPlanInspectorSuite extends AnyFunSuite
@@ -141,7 +141,7 @@ package com.nvidia.spark.rapids.cubf {
     }
 
     test("findBfIdInPlan: AQE-wrapped subquery regression case") {
-      val tryRead = TryReadBFRegistryExec(bfId = "cubf-aqe-regression-test")
+      val tryRead = TryReadCuBFRegistryExec(bfId = "cubf-aqe-regression-test")
       val aqeWrapped = FakeAdaptiveSparkPlanExec(tryRead)
       val result = CuBFPlanInspector.findBfIdInPlan(aqeWrapped)
       assert(result === Some("cubf-aqe-regression-test"),
@@ -149,7 +149,7 @@ package com.nvidia.spark.rapids.cubf {
     }
 
     test("findBfIdInPlan: non-AQE direct child path still works") {
-      val tryRead = TryReadBFRegistryExec(bfId = "cubf-non-aqe-path")
+      val tryRead = TryReadCuBFRegistryExec(bfId = "cubf-non-aqe-path")
       val wrapped = WrapExec(tryRead)
       val result = CuBFPlanInspector.findBfIdInPlan(wrapped)
       assert(result === Some("cubf-non-aqe-path"),
@@ -157,21 +157,21 @@ package com.nvidia.spark.rapids.cubf {
           "break the standard children traversal")
     }
 
-    test("findBfIdInPlan: leaf TryReadBFRegistryExec at root") {
-      val tryRead = TryReadBFRegistryExec(bfId = "cubf-root")
+    test("findBfIdInPlan: leaf TryReadCuBFRegistryExec at root") {
+      val tryRead = TryReadCuBFRegistryExec(bfId = "cubf-root")
       assert(CuBFPlanInspector.findBfIdInPlan(tryRead) === Some("cubf-root"))
     }
 
-    test("findBfIdInPlan: returns None when no TryReadBFRegistryExec is reachable") {
+    test("findBfIdInPlan: returns None when no TryReadCuBFRegistryExec is reachable") {
       val plain = PlainLeafExec()
       val aqeWrapped = FakeAdaptiveSparkPlanExec(plain)
       assert(CuBFPlanInspector.findBfIdInPlan(aqeWrapped).isEmpty,
-        "absence of TryReadBFRegistryExec must yield None, not throw")
+        "absence of TryReadCuBFRegistryExec must yield None, not throw")
     }
 
     test("findBfIdInPlan: asserts on multiple registry reads in one subquery") {
-      val left = TryReadBFRegistryExec(bfId = "cubf-left")
-      val right = TryReadBFRegistryExec(bfId = "cubf-right")
+      val left = TryReadCuBFRegistryExec(bfId = "cubf-left")
+      val right = TryReadCuBFRegistryExec(bfId = "cubf-right")
       val err = intercept[AssertionError] {
         CuBFPlanInspector.findBfIdInPlan(PairExec(left, right))
       }
@@ -210,7 +210,7 @@ package com.nvidia.spark.rapids.cubf {
 
     private def probeExpression(bfId: String): org.apache.spark.sql.execution.ScalarSubquery = {
       org.apache.spark.sql.execution.ScalarSubquery(
-        SubqueryExec("probe", TryReadBFRegistryExec(bfId)),
+        SubqueryExec("probe", TryReadCuBFRegistryExec(bfId)),
         NamedExpression.newExprId)
     }
 

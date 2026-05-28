@@ -277,7 +277,7 @@ canonicalization safety in §5.2:
    filtered dimension are the canonical case.
 6. **Sibling-coalescence pre-pass.** Distinct specs over the same build child
    are coalesced into a single multi-spec marker before
-   `InlineCuBFBuildReplacement` runs. Two `InlineBFBuildExec` nodes with
+   `InlineCuBFBuildReplacement` runs. Two `InlineCuBFBuildExec` nodes with
    different specs and equal canonical children are never emitted.
 
 ### 5.2 `GpuGenerateCuBFExec`
@@ -456,7 +456,7 @@ optional metadata plumbing around that existing expression:
   `(buildWallNanos, bfBytes)` updates on the driver.
 
 These hooks are diagnostic-only and default to absent. They are enabled only
-when `spark.rapids.sql.cubf.diagnosticMetrics.enabled=true` and the `bfId` can
+when `spark.rapids.sql.cubloomfilter.diagnosticMetrics.enabled=true` and the `bfId` can
 be discovered from planner-emitted CuBF markers. If the diagnostic flag is off,
 or if no private CuBF marker/bfId is present, no diagnostic accumulator is
 registered and the probe path does not pay the per-batch reduction, device-to-host
@@ -1109,7 +1109,7 @@ one accumulator object per distinct bloom filter id indefinitely.
 **Lifecycle.** Diagnostic accumulator caches are keyed by `(SQL execution id,
 bfId)` and cleaned on `SparkListenerSQLExecutionEnd`. The cleanup removes only
 RAPIDS' static cache references for diagnostic build/probe accumulators. It does
-not touch the inline BF byte accumulator path, `BFRegistry`, or Spark's own
+not touch the inline BF byte accumulator path, `CuBFRegistry`, or Spark's own
 completed accumulator/event-log history.
 
 ### 11.5 Configuration Derivation Summary
