@@ -39,15 +39,14 @@
 {"spark": "402"}
 {"spark": "411"}
 spark-rapids-shim-json-lines ***/
-package com.nvidia.spark.rapids
+package com.nvidia.spark.rapids.cubf
 
-import com.nvidia.spark.rapids.cubf.CuBFDiagPairMetric
 import org.scalatest.{BeforeAndAfterAll, Suite}
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.SQLExecution
 
-trait CuBFLocalSparkSuite extends BeforeAndAfterAll { this: Suite =>
+trait CuBFSparkFixtureSuite extends BeforeAndAfterAll { this: Suite =>
 
   @transient protected var spark: SparkSession = _
 

@@ -41,9 +41,9 @@
 spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids
 
-import com.nvidia.spark.rapids.CuBFTestHelpers._
-import com.nvidia.spark.rapids.FakeInlineExecs._
 import com.nvidia.spark.rapids.cubf.{CuBFBuildResultAccumulator, InlineCuBFBuildReplacement}
+import com.nvidia.spark.rapids.cubf.CuBFTestHelpers._
+import com.nvidia.spark.rapids.cubf.FakeInlineExecs._
 import org.scalatest.funsuite.AnyFunSuite
 
 /** Tests CuBF replacement helpers and bloom-filter accumulator merge behavior. */

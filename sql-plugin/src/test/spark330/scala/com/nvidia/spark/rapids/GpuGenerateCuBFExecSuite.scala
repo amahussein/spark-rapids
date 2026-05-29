@@ -43,16 +43,17 @@ package com.nvidia.spark.rapids
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 
-import com.nvidia.spark.rapids.CuBFTestHelpers._
-import com.nvidia.spark.rapids.cubf.{CuBFBuildResultAccumulator, CuBFDiagPairMetric}
-import com.nvidia.spark.rapids.cubf.{CuBFSpec, GpuGenerateCuBFExec, InlineCuBFBuildReplacement}
+import com.nvidia.spark.rapids.cubf.{CuBFBuildResultAccumulator, CuBFDiagPairMetric,
+  CuBFSparkFixtureSuite, CuBFSpec, GpuGenerateCuBFExec,
+  InlineCuBFBuildReplacement}
+import com.nvidia.spark.rapids.cubf.CuBFTestHelpers._
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.execution.SparkPlan
 
 /** Tests multi-spec `GpuGenerateCuBFExec` driver-side behavior. */
 class GpuGenerateCuBFExecSuite extends AnyFunSuite
-    with CuBFLocalSparkSuite {
+    with CuBFSparkFixtureSuite {
 
   private def stubChild(): SparkPlan = spark.range(0).queryExecution.executedPlan
 

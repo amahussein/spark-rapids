@@ -39,7 +39,7 @@
 {"spark": "402"}
 {"spark": "411"}
 spark-rapids-shim-json-lines ***/
-package com.nvidia.spark.rapids
+package com.nvidia.spark.rapids.cubf
 
 /**
  * Shared CuBF test fixtures.

@@ -123,5 +123,4 @@ object BloomFilterShims extends Logging {
         })
     ).map(r => (r.getClassFor.asSubclass(classOf[Expression]), r)).toMap
   }
-
 }

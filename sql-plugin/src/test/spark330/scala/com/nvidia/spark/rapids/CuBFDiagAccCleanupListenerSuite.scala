@@ -41,14 +41,15 @@
 spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids
 
-import com.nvidia.spark.rapids.cubf.{CuBFDiagAccCleanupListener, CuBFDiagPairMetric}
+import com.nvidia.spark.rapids.cubf.{CuBFDiagAccCleanupListener, CuBFDiagPairMetric,
+  CuBFSparkFixtureSuite}
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionEnd
 
 class CuBFDiagAccCleanupListenerSuite extends AnyFunSuite
-    with CuBFLocalSparkSuite
+    with CuBFSparkFixtureSuite
     with BeforeAndAfterEach {
 
   override def afterEach(): Unit = {
@@ -104,5 +105,4 @@ class CuBFDiagAccCleanupListenerSuite extends AnyFunSuite
     assert(CuBFDiagPairMetric.buildContains(202L, "bf-2"))
     assert(CuBFDiagPairMetric.probeContains(202L, "bf-2"))
   }
-
 }

@@ -66,12 +66,12 @@ package com.nvidia.spark.rapids.cubf {
   import org.apache.spark.sql.execution.{BinaryExecNode, LeafExecNode, SparkPlan, SubqueryExec,
     UnaryExecNode}
 
-  import com.nvidia.spark.rapids.{CuBFLocalSparkSuite, RapidsConf}
+  import com.nvidia.spark.rapids.RapidsConf
   import com.nvidia.spark.rapids.optimizer.cubf.TryReadCuBFRegistryExec
 
   /** Regression coverage for AQE-aware `findBfIdInPlan`. */
   class CuBFPlanInspectorSuite extends AnyFunSuite
-      with CuBFLocalSparkSuite {
+      with CuBFSparkFixtureSuite {
 
     private case class FakeAdaptiveSparkPlanExec(inner: SparkPlan)
         extends LeafExecNode {
@@ -213,6 +213,5 @@ package com.nvidia.spark.rapids.cubf {
         SubqueryExec("probe", TryReadCuBFRegistryExec(bfId)),
         NamedExpression.newExprId)
     }
-
   }
 }
