@@ -59,8 +59,9 @@ import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 
 import ai.rapids.cudf.HostMemoryBuffer
-import com.nvidia.spark.rapids.{RapidsConf, SlicedSerializedColumnVector}
-import com.nvidia.spark.rapids.spill.SpillFramework
+import com.nvidia.spark.rapids.{MapOutputSegments, MultithreadedShuffleBufferCatalog, RapidsConf,
+  SlicedSerializedColumnVector}
+import com.nvidia.spark.rapids.spill.{SpillablePartialFileHandle, SpillFramework}
 import org.mockito.{Mock, MockitoAnnotations}
 import org.mockito.Answers.RETURNS_SMART_NULLS
 import org.mockito.ArgumentMatchers.{any, anyInt, anyLong}
@@ -69,7 +70,7 @@ import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.mockito.MockitoSugar
 
-import org.apache.spark.{HashPartitioner, SparkConf, TaskContext}
+import org.apache.spark.{HashPartitioner, SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.executor.{ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.internal.Logging
 import org.apache.spark.serializer._
@@ -560,6 +561,74 @@ class RapidsShuffleThreadedWriterSuite extends AnyFunSuite
     writer.write(createTestRecords(Iterator(0, 1, 2, 3, 4, 5, 6)))
     writer.stop(true)
     verifyWrite(writer, expectedRecords = 7, partitionsWithData = Set(0, 1, 2, 3, 4, 5, 6))
+  }
+
+  // ==================== Skip-merge catalog ====================
+
+  // Runs body with the skip-merge catalog enabled through GpuShuffleEnv's own gating.
+  private def withSkipMergeCatalog(body: MultithreadedShuffleBufferCatalog => Unit): Unit = {
+    val sparkConf = new SparkConf(loadDefaults = false)
+      .set("spark.shuffle.manager", GpuShuffleEnv.RAPIDS_SHUFFLE_CLASS)
+      .set("spark.rapids.shuffle.mode", "MULTITHREADED")
+      .set("spark.rapids.shuffle.multithreaded.skipMerge", "true")
+      .set("spark.rapids.memory.host.offHeapLimit.enabled", "true")
+    val sparkEnv = mock[SparkEnv]
+    when(sparkEnv.conf).thenReturn(sparkConf)
+    when(sparkEnv.blockManager).thenReturn(blockManager)
+    SparkEnv.set(sparkEnv)
+    try {
+      GpuShuffleEnv.init(new RapidsConf(sparkConf))
+      body(GpuShuffleEnv.getMultithreadedCatalog.getOrElse(fail("skip-merge catalog not enabled")))
+    } finally {
+      GpuShuffleEnv.shutdown()
+      SparkEnv.set(null)
+    }
+  }
+
+  test("skip-merge: an empty attempt reports the lengths of the output kept for its map id") {
+    withSkipMergeCatalog { catalog =>
+      catalog.registerShuffle(0)
+      val lengths = Array(0L, 5L, 0L, 0L, 0L, 0L, 3L)
+      val earlier = new MapOutputSegments.Builder()
+        .addPartialFile(mock[SpillablePartialFileHandle], lengths).build()
+      assert(catalog.publishMapOutput(0, 0L, earlier).isDefined)
+
+      val writer = createWriter()
+      writer.write(Iterator.empty)
+      // Reducers fetch exactly the blocks the MapStatus reports as non-empty.
+      val status = writer.stop(true).getOrElse(fail("no MapStatus"))
+      assertResult(lengths.map(_ > 0).toSeq)((0 until 7).map(r => status.getSizeForBlock(r) > 0))
+      catalog.unregisterShuffle(0)
+    }
+  }
+
+  test("skip-merge: an attempt with data keeps the empty output published first") {
+    withSkipMergeCatalog { catalog =>
+      catalog.registerShuffle(0)
+      val emptyAttempt = createWriter()
+      emptyAttempt.write(Iterator.empty)
+      emptyAttempt.stop(true)
+
+      val writer = createWriter()
+      writer.write(createTestRecords(Iterator(0, 1, 2)))
+      val status = writer.stop(true).getOrElse(fail("no MapStatus"))
+      assert((0 until 7).forall(r => status.getSizeForBlock(r) == 0L))
+      assert((0 until 7).forall(r => !catalog.hasData(ShuffleBlockId(0, 0L, r))))
+      catalog.unregisterShuffle(0)
+    }
+  }
+
+  test("skip-merge: a writer whose shuffle was cleaned up fails instead of reporting lengths") {
+    withSkipMergeCatalog { _ =>
+      // Nothing registered, as when cleanup ran on this executor after the task's getWriter.
+      val emptyAttempt = createWriter()
+      intercept[IllegalStateException](emptyAttempt.write(Iterator.empty))
+      emptyAttempt.stop(false)
+
+      val writer = createWriter()
+      intercept[IllegalStateException](writer.write(createTestRecords(Iterator(0, 1, 2))))
+      writer.stop(false)
+    }
   }
 
   // ==================== Multi-batch: Basic Scenarios ====================
