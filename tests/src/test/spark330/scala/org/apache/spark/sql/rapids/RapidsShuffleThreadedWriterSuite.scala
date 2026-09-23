@@ -585,6 +585,24 @@ class RapidsShuffleThreadedWriterSuite extends AnyFunSuite
     }
   }
 
+  // Records the lengths the writer builds its MapStatus from, because Databricks shims return
+  // MapStatusWithStats, which has no getSizeForBlock. The override's result type is left to
+  // inference so it compiles against either shim; do not declare it.
+  private class MapStatusLengthsWriter extends RapidsShuffleThreadedWriter[Int, ColumnarBatch](
+      blockManager, shuffleHandle, 0L, conf,
+      new ThreadSafeShuffleWriteMetricsReporter(taskContext.taskMetrics().shuffleWriteMetrics),
+      1024 * 1024, shuffleExecutorComponents, numWriterThreads) {
+    var mapStatusLengths: Option[Seq[Long]] = None
+
+    override def getMapStatus(
+        loc: BlockManagerId,
+        uncompressedSizes: Array[Long],
+        mapTaskId: Long) = {
+      mapStatusLengths = Some(uncompressedSizes.toList)
+      super.getMapStatus(loc, uncompressedSizes, mapTaskId)
+    }
+  }
+
   test("skip-merge: an empty attempt reports the lengths of the output kept for its map id") {
     withSkipMergeCatalog { catalog =>
       catalog.registerShuffle(0)
@@ -593,11 +611,11 @@ class RapidsShuffleThreadedWriterSuite extends AnyFunSuite
         .addPartialFile(mock[SpillablePartialFileHandle], lengths).build()
       assert(catalog.publishMapOutput(0, 0L, earlier).isDefined)
 
-      val writer = createWriter()
+      val writer = new MapStatusLengthsWriter
       writer.write(Iterator.empty)
       // Reducers fetch exactly the blocks the MapStatus reports as non-empty.
-      val status = writer.stop(true).getOrElse(fail("no MapStatus"))
-      assertResult(lengths.map(_ > 0).toSeq)((0 until 7).map(r => status.getSizeForBlock(r) > 0))
+      assert(writer.stop(true).isDefined)
+      assertResult(Some(lengths.toSeq))(writer.mapStatusLengths)
       catalog.unregisterShuffle(0)
     }
   }
@@ -609,10 +627,10 @@ class RapidsShuffleThreadedWriterSuite extends AnyFunSuite
       emptyAttempt.write(Iterator.empty)
       emptyAttempt.stop(true)
 
-      val writer = createWriter()
+      val writer = new MapStatusLengthsWriter
       writer.write(createTestRecords(Iterator(0, 1, 2)))
-      val status = writer.stop(true).getOrElse(fail("no MapStatus"))
-      assert((0 until 7).forall(r => status.getSizeForBlock(r) == 0L))
+      assert(writer.stop(true).isDefined)
+      assertResult(Some(Seq.fill(7)(0L)))(writer.mapStatusLengths)
       assert((0 until 7).forall(r => !catalog.hasData(ShuffleBlockId(0, 0L, r))))
       catalog.unregisterShuffle(0)
     }
