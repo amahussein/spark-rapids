@@ -67,63 +67,63 @@ A reducer requesting partition P from map task M needs data from ALL partial fil
 ## 5. Architecture Overview
 
 ```
-+---------------------------------------------------------------------------+
-|                                EXECUTOR                                   |
-|                                                                           |
-|  +---------------------------------------------------------------------+  |
-|  |                      Map Task (Shuffle Write)                       |  |
-|  |                                                                     |  |
-|  |  Records --> RapidsShuffleThreadedWriter                            |  |
-|  |                     |                                               |  |
-|  |                     v                                               |  |
-|  |             SpillablePartialFileHandle (per batch)                  |  |
-|  |                     |                                               |  |
-|  |                     v                                               |  |
-|  |       +-----------------------------------+                         |  |
-|  |       | MultithreadedShuffleBufferCatalog | <-- Publish whole map   |  |
-|  |       |                                   |     output at task end  |  |
-|  |       |  mapId -> MapOutputSegments       |                         |  |
-|  |       +-----------------------------------+                         |  |
-|  +---------------------------------------------------------------------+  |
-|                                                                           |
-|  +---------------------------------------------------------------------+  |
-|  |                     Reduce Task (Shuffle Read)                      |  |
-|  |                                                                     |  |
-|  |  GpuShuffleBlockResolverBase.getBlockData(blockId)                  |  |
-|  |                     |                                               |  |
-|  |                     v                                               |  |
-|  |       +-----------------------------------+                         |  |
-|  |       | MultithreadedShuffleBufferCatalog |                         |  |
-|  |       |         .getMergedBuffer()        |                         |  |
-|  |       +-----------------------------------+                         |  |
-|  |                     |                                               |  |
-|  |                     v                                               |  |
-|  |           MultiBatchManagedBuffer                                   |  |
-|  |           (assembles data from segments)                            |  |
-|  +---------------------------------------------------------------------+  |
-|                                                                           |
-|  +---------------------------------------------------------------------+  |
-|  |                     ShuffleCleanupEndpoint                          |  |
-|  |                                                                     |  |
-|  |  Polls driver periodically --> Receives shuffle IDs to clean        |  |
-|  |                     |                                               |  |
-|  |                     v                                               |  |
-|  |       MultithreadedShuffleBufferCatalog.unregisterShuffle()         |  |
-|  |       (detaches and closes the whole registration)                  |  |
-|  +---------------------------------------------------------------------+  |
-+---------------------------------------------------------------------------+
+┌───────────────────────────────────────────────────────────────────────────┐
+│                                EXECUTOR                                   │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │                      Map Task (Shuffle Write)                       │  │
+│  │                                                                     │  │
+│  │  Records ──> RapidsShuffleThreadedWriter                            │  │
+│  │                     │                                               │  │
+│  │                     ▼                                               │  │
+│  │             SpillablePartialFileHandle (per batch)                  │  │
+│  │                     │                                               │  │
+│  │                     ▼                                               │  │
+│  │       ┌───────────────────────────────────┐                         │  │
+│  │       │ MultithreadedShuffleBufferCatalog │ ◄── Publish whole map   │  │
+│  │       │                                   │     output at task end  │  │
+│  │       │  mapId -> MapOutputSegments       │                         │  │
+│  │       └───────────────────────────────────┘                         │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │                     Reduce Task (Shuffle Read)                      │  │
+│  │                                                                     │  │
+│  │  GpuShuffleBlockResolverBase.getBlockData(blockId)                  │  │
+│  │                     │                                               │  │
+│  │                     ▼                                               │  │
+│  │       ┌───────────────────────────────────┐                         │  │
+│  │       │ MultithreadedShuffleBufferCatalog │                         │  │
+│  │       │         .getMergedBuffer()        │                         │  │
+│  │       └───────────────────────────────────┘                         │  │
+│  │                     │                                               │  │
+│  │                     ▼                                               │  │
+│  │           MultiBatchManagedBuffer                                   │  │
+│  │           (assembles data from segments)                            │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │                     ShuffleCleanupEndpoint                          │  │
+│  │                                                                     │  │
+│  │  Polls driver periodically ──> Receives shuffle IDs to clean        │  │
+│  │                     │                                               │  │
+│  │                     ▼                                               │  │
+│  │       MultithreadedShuffleBufferCatalog.unregisterShuffle()         │  │
+│  │       (detaches and closes the whole registration)                  │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────────┘
 
-+---------------------------------------------------------------------------+
-|                                 DRIVER                                    |
-|                                                                           |
-|  +---------------------------------------------+  +---------------------+ |
-|  | ShuffleCleanupListener                      |  | ShuffleCleanupMgr   | |
-|  |                                             |  |                     | |
-|  | onJobStart: track shuffleId -> execId       |--| registerForCleanup  | |
-|  | onSQLExecutionEnd: trigger cleanup          |  | handlePoll          | |
-|  +---------------------------------------------+  | handleStats         | |
-|                                                   +---------------------+ |
-+---------------------------------------------------------------------------+
+┌───────────────────────────────────────────────────────────────────────────┐
+│                                 DRIVER                                    │
+│                                                                           │
+│  ┌─────────────────────────────────────────────┐  ┌─────────────────────┐ │
+│  │ ShuffleCleanupListener                      │  │ ShuffleCleanupMgr   │ │
+│  │                                             │  │                     │ │
+│  │ onJobStart: track shuffleId -> execId       │──│ registerForCleanup  │ │
+│  │ onSQLExecutionEnd: trigger cleanup          │  │ handlePoll          │ │
+│  └─────────────────────────────────────────────┘  │ handleStats         │ │
+│                                                   └─────────────────────┘ │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 6. Core Components
@@ -228,49 +228,49 @@ cleanup when SQL executions complete.
 ### 7.1 Write Path
 
 ```
-+---------------------------------------------------------------------------+
-|                           Shuffle Write Flow                              |
-+---------------------------------------------------------------------------+
+┌───────────────────────────────────────────────────────────────────────────┐
+│                           Shuffle Write Flow                              │
+└───────────────────────────────────────────────────────────────────────────┘
 
   Input Records
-       |
-       v
-  +---------------------------------------+
-  |  RapidsShuffleThreadedWriter          |
-  |                                       |
-  |  for each batch:                      |
-  |    1. Create SpillablePartialFile-    |
-  |       Handle (memory-backed)          |
-  |    2. Write partition data            |
-  |    3. Track partition lengths         |
-  +---------------------------------------+
-       |
-       | At task end (instead of merging)
-       v
-  +---------------------------------------+
-  |  storePartialFilesInCatalog()         |
-  |                                       |
-  |  builder = MapOutputSegments.Builder  |
-  |  for each partial file:               |
-  |    builder.addPartialFile(handle,     |
-  |      partitionLengths)                |
-  |  catalog.publishMapOutputOrFail(      |
-  |    shuffleId, mapId, builder.build()) |
-  |  -> kept output's lengths, or the     |
-  |     task fails if cleanup already ran |
-  +---------------------------------------+
-       |
-       v
-  +---------------------------------------+
-  |  MultithreadedShuffleBufferCatalog    |
-  |                                       |
-  |  shuffle 0 -> registration            |
-  |    map 0 -> MapOutputSegments         |
-  |      reduce 0: [Segment(h1, 0, 100)]  |
-  |      reduce 1: [Segment(h1, 100, 150)]|
-  |      ...                              |
-  |    ...                                |
-  +---------------------------------------+
+       │
+       ▼
+  ┌───────────────────────────────────────┐
+  │  RapidsShuffleThreadedWriter          │
+  │                                       │
+  │  for each batch:                      │
+  │    1. Create SpillablePartialFile-    │
+  │       Handle (memory-backed)          │
+  │    2. Write partition data            │
+  │    3. Track partition lengths         │
+  └───────────────────────────────────────┘
+       │
+       │ At task end (instead of merging)
+       ▼
+  ┌───────────────────────────────────────┐
+  │  storePartialFilesInCatalog()         │
+  │                                       │
+  │  builder = MapOutputSegments.Builder  │
+  │  for each partial file:               │
+  │    builder.addPartialFile(handle,     │
+  │      partitionLengths)                │
+  │  catalog.publishMapOutputOrFail(      │
+  │    shuffleId, mapId, builder.build()) │
+  │  -> kept output's lengths, or the     │
+  │     task fails if cleanup already ran │
+  └───────────────────────────────────────┘
+       │
+       ▼
+  ┌───────────────────────────────────────┐
+  │  MultithreadedShuffleBufferCatalog    │
+  │                                       │
+  │  shuffle 0 -> registration            │
+  │    map 0 -> MapOutputSegments         │
+  │      reduce 0: [Segment(h1, 0, 100)]  │
+  │      reduce 1: [Segment(h1, 100, 150)]│
+  │      ...                              │
+  │    ...                                │
+  └───────────────────────────────────────┘
 ```
 
 **Key change from Phase 1**: At task end, instead of calling `mergePartialFiles()` (which would 
@@ -280,43 +280,43 @@ builds an index for direct access.
 ### 7.2 Read Path
 
 ```
-+---------------------------------------------------------------------------+
-|                           Shuffle Read Flow                               |
-+---------------------------------------------------------------------------+
+┌───────────────────────────────────────────────────────────────────────────┐
+│                           Shuffle Read Flow                               │
+└───────────────────────────────────────────────────────────────────────────┘
 
   Reducer requests ShuffleBlockId(0, mapId=5, reduceId=3)
-       |
-       v
-  +---------------------------------------+
-  |  GpuShuffleBlockResolverBase          |
-  |  .getBlockData(blockId)               |
-  +---------------------------------------+
-       |
-       | Query catalog
-       v
-  +---------------------------------------+
-  |  MultithreadedShuffleBufferCatalog    |
-  |  .getMergedBuffer(blockId)            |
-  |                                       |
-  |  registration(0) -> map output 5      |
-  |  .segments(3, 4) -> [                 |
-  |    Segment(handle1, 500, 100),        |  <- From batch 1
-  |    Segment(handle2, 200, 50)          |  <- From batch 2
-  |  ]                                    |
-  +---------------------------------------+
-       |
-       v
-  +---------------------------------------+
-  |  MultiBatchManagedBuffer              |
-  |  (wraps the segments)                 |
-  |                                       |
-  |  .createInputStream() ->              |
-  |    MultiSegmentInputStream            |
-  |    reads handle1[500..600]            |
-  |    then handle2[200..250]             |
-  +---------------------------------------+
-       |
-       v
+       │
+       ▼
+  ┌───────────────────────────────────────┐
+  │  GpuShuffleBlockResolverBase          │
+  │  .getBlockData(blockId)               │
+  └───────────────────────────────────────┘
+       │
+       │ Query catalog
+       ▼
+  ┌───────────────────────────────────────┐
+  │  MultithreadedShuffleBufferCatalog    │
+  │  .getMergedBuffer(blockId)            │
+  │                                       │
+  │  registration(0) -> map output 5      │
+  │  .segments(3, 4) -> [                 │
+  │    Segment(handle1, 500, 100),        │  <- From batch 1
+  │    Segment(handle2, 200, 50)          │  <- From batch 2
+  │  ]                                    │
+  └───────────────────────────────────────┘
+       │
+       ▼
+  ┌───────────────────────────────────────┐
+  │  MultiBatchManagedBuffer              │
+  │  (wraps the segments)                 │
+  │                                       │
+  │  .createInputStream() ->              │
+  │    MultiSegmentInputStream            │
+  │    reads handle1[500..600]            │
+  │    then handle2[200..250]             │
+  └───────────────────────────────────────┘
+       │
+       ▼
   Data returned to reducer (150 bytes total)
 ```
 
