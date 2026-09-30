@@ -131,6 +131,33 @@ class ShuffleBufferCatalogSuite
     shuffleCatalog.unregisterShuffle(1)
   }
 
+  test("unregisterShuffle copies a block's list under the list's lock") {
+    val awaitSeconds = 30
+    val shuffleCatalog = new ShuffleBufferCatalog()
+    shuffleCatalog.registerShuffle(1)
+    val block = ShuffleBlockId(1, 1L, 1)
+    shuffleCatalog.addDegenerateRapidsBuffer(block, mock[TableMeta])
+    shuffleCatalog.addDegenerateRapidsBuffer(block, mock[TableMeta])
+    val unregister = new Thread(() => shuffleCatalog.unregisterShuffle(1), "shuffle-unregister")
+    unregister.setDaemon(true)
+    val threads = ManagementFactory.getThreadMXBean
+    val list = blockBufferIds(shuffleCatalog, block)
+    list.synchronized {
+      unregister.start()
+      // A failed writer's cleanup can be shifting the list, so the copy must wait for its lock.
+      eventually(Timeout(Span(awaitSeconds, Seconds))) {
+        val info = threads.getThreadInfo(unregister.getId)
+        assert(info != null && info.getThreadState == Thread.State.BLOCKED &&
+          info.getLockInfo.getIdentityHashCode == System.identityHashCode(list),
+          "unregisterShuffle did not wait for the block's list")
+      }
+    }
+    unregister.join(TimeUnit.SECONDS.toMillis(awaitSeconds))
+    assert(!unregister.isAlive)
+    assert(!shuffleCatalog.hasActiveShuffle(1))
+    assertResult((0, 0, 0))(shuffleCatalog.bookkeepingSizes)
+  }
+
   test("get a columnar batch iterator from catalog") {
     val shuffleCatalog = new ShuffleBufferCatalog()
     shuffleCatalog.registerShuffle(1)
