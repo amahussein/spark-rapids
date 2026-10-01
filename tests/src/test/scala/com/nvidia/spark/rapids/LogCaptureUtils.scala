@@ -44,7 +44,15 @@ object LogCaptureUtils {
    * @return Array of captured log messages
    */
   def captureLogsFrom(loggerNames: Seq[String])(operation: => Unit): Array[String] = {
-    val logMessages = new ArrayBuffer[String]()
+    captureLogEventsFrom(loggerNames)(operation).map(_._2)
+  }
+
+  /**
+   * Like captureLogsFrom, but pairs each message with its level name, such as "WARN".
+   */
+  def captureLogEventsFrom(loggerNames: Seq[String])(
+      operation: => Unit): Array[(String, String)] = {
+    val logMessages = new ArrayBuffer[(String, String)]()
     
     val capturer = if (isLog4j2) {
       new Log4j2Capturer(loggerNames, logMessages)
@@ -76,7 +84,7 @@ private trait LogCapturer {
  */
 private class Log4j1Capturer(
     loggerNames: Seq[String],
-    logMessages: ArrayBuffer[String]) extends LogCapturer {
+    logMessages: ArrayBuffer[(String, String)]) extends LogCapturer {
   
   private val loggerClass = Class.forName("org.apache.log4j.Logger")
   private val levelClass = Class.forName("org.apache.log4j.Level")
@@ -107,7 +115,8 @@ private class Log4j1Capturer(
             val getRenderedMessageMethod = event.getClass.getMethod(
               "getRenderedMessage")
             val message = getRenderedMessageMethod.invoke(event).toString
-            logMessages.synchronized { logMessages += message }
+            val level = event.getClass.getMethod("getLevel").invoke(event).toString
+            logMessages.synchronized { logMessages += ((level, message)) }
             null
           case "getName" => "TestCaptureAppender"
           case "close" => null
@@ -153,7 +162,7 @@ private class Log4j1Capturer(
  */
 private class Log4j2Capturer(
     loggerNames: Seq[String],
-    logMessages: ArrayBuffer[String]) extends LogCapturer {
+    logMessages: ArrayBuffer[(String, String)]) extends LogCapturer {
   
   private val logManagerClass = Class.forName("org.apache.logging.log4j.LogManager")
   private val getContextMethod = logManagerClass.getMethod(
@@ -183,7 +192,8 @@ private class Log4j2Capturer(
             val getFormattedMessageMethod = message.getClass.getMethod(
               "getFormattedMessage")
             val formattedMsg = getFormattedMessageMethod.invoke(message).toString
-            logMessages.synchronized { logMessages += formattedMsg }
+            val level = logEvent.getClass.getMethod("getLevel").invoke(logEvent).toString
+            logMessages.synchronized { logMessages += ((level, formattedMsg)) }
             null
           case "getName" => "TestCaptureAppender"
           case "isStarted" => JBoolean.TRUE
