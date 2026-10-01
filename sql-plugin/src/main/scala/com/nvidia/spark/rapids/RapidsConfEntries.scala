@@ -260,18 +260,11 @@ private[rapids] trait RapidsConfEntries extends RapidsConfSqlEntries {
     .createWithDefault(0)
 
   val SHUFFLE_UCX_MGMT_SERVER_HOST = conf("spark.rapids.shuffle.ucx.managementServerHost")
-    .doc("The host to be used to start the management server")
+    .doc("Deprecated. This config has no effect and will be removed in a future release. " +
+      "The UCX shuffle listener always binds to the host of the executor's BlockManager.")
     .startupOnly()
     .stringConf
     .createWithDefault(null)
-
-  val SHUFFLE_UCX_MGMT_CONNECTION_TIMEOUT =
-    conf("spark.rapids.shuffle.ucx.managementConnectionTimeout")
-    .doc("The timeout for client connections to a remote peer")
-    .internal()
-    .startupOnly()
-    .integerConf
-    .createWithDefault(0)
 
   val SHUFFLE_UCX_BOUNCE_BUFFERS_SIZE = conf("spark.rapids.shuffle.ucx.bounceBuffers.size")
     .doc("The size of bounce buffer to use in bytes. Note that this size will be the same " +

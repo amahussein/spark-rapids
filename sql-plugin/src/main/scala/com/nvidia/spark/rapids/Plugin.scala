@@ -322,6 +322,13 @@ object RapidsPluginUtils extends Logging {
         "you have a special use case.")
       }
     }
+
+    val ucxMgmtHostKey = RapidsConf.SHUFFLE_UCX_MGMT_SERVER_HOST.key
+    if (conf.contains(ucxMgmtHostKey)) {
+      logWarning(s"'$ucxMgmtHostKey' is deprecated and has no effect. The UCX shuffle " +
+        "listener always binds to the host of the executor's BlockManager. This config " +
+        "will be removed in a future release.")
+    }
   }
 
   def loadProps(resourceName: String): Map[String, String] = {
