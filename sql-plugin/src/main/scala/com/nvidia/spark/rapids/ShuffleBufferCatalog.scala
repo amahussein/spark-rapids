@@ -23,7 +23,7 @@ import java.util.function.{Consumer, IntUnaryOperator}
 import scala.collection.mutable.ArrayBuffer
 
 import ai.rapids.cudf.{ContiguousTable, Cuda, DeviceMemoryBuffer, Table}
-import com.nvidia.spark.rapids.Arm.withResource
+import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.format.TableMeta
 import com.nvidia.spark.rapids.spill.{SpillableDeviceBufferHandle, SpillableHandle}
@@ -126,6 +126,19 @@ class ShuffleBufferCatalog extends Logging {
   }
 
   /**
+   * Allocates a buffer id for `blockId`, passes it to `register`, then closes `input`. The caller
+   * learns the id only if this returns, so any failure once the id exists, closing `input`
+   * included, removes what was registered under it.
+   */
+  private def registerAndClose(blockId: ShuffleBlockId, input: AutoCloseable)(
+      register: ShuffleBufferId => Unit): ShuffleBufferId = {
+    val bufferId = closeOnExcept(input)(_ => nextShuffleBufferId(blockId))
+    val rollback: AutoCloseable = () => removeCachedHandles(Seq(bufferId))
+    closeOnExcept(rollback)(_ => withResource(input)(_ => register(bufferId)))
+    bufferId
+  }
+
+  /**
    * Adds a contiguous table shuffle table to the device storage. This does NOT take ownership of
    * the contiguous table, so it is the responsibility of the caller to close it.
    * The refcount of the underlying device buffer will be incremented so the contiguous table
@@ -139,14 +152,12 @@ class ShuffleBufferCatalog extends Logging {
   def addContiguousTable(blockId: ShuffleBlockId,
                          contigTable: ContiguousTable,
                          initialSpillPriority: Long): ShuffleBufferId = {
-    withResource(contigTable) { _ =>
-      val bufferId = nextShuffleBufferId(blockId)
+    registerAndClose(blockId, contigTable) { bufferId =>
       val tableMeta = MetaUtils.buildTableMeta(bufferId.tableId, contigTable)
       val buff = contigTable.getBuffer
       buff.incRefCount()
       val handle = SpillableDeviceBufferHandle(buff, initialSpillPriority)
       trackCachedHandle(bufferId, handle, tableMeta)
-      bufferId
     }
   }
 
@@ -162,8 +173,7 @@ class ShuffleBufferCatalog extends Logging {
     blockId: ShuffleBlockId,
     compressedBatch: ColumnarBatch,
     initialSpillPriority: Long): ShuffleBufferId = {
-    withResource(compressedBatch) { _ =>
-      val bufferId = nextShuffleBufferId(blockId)
+    registerAndClose(blockId, compressedBatch) { bufferId =>
       val compressed = compressedBatch.column(0).asInstanceOf[GpuCompressedColumnVector]
       val tableMeta = compressed.getTableMeta
       // update the table metadata for the buffer ID generated above
@@ -172,7 +182,6 @@ class ShuffleBufferCatalog extends Logging {
       buff.incRefCount()
       val handle = SpillableDeviceBufferHandle(buff, initialSpillPriority)
       trackCachedHandle(bufferId, handle, tableMeta)
-      bufferId
     }
   }
 

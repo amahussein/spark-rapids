@@ -82,6 +82,19 @@ class ShuffleBufferCatalogSuite
     shuffleCatalog.unregisterShuffle(1)
   }
 
+  test("an add that fails after allocating its buffer id leaves nothing registered") {
+    val shuffleCatalog = new ShuffleBufferCatalog()
+    shuffleCatalog.registerShuffle(1)
+    val block = ShuffleBlockId(1, 1L, 1)
+    // a packed batch is not compressed, so the add throws once the id is in the block's list
+    val packed = GpuPackedTableColumn.from(RapidsShuffleTestHelper.buildContiguousTable(10))
+    assertThrows[ClassCastException](shuffleCatalog.addCompressedBatch(block, packed, -1))
+    assertResult((0, 0, 0))(shuffleCatalog.bookkeepingSizes)
+    assertResult(0)(SpillFramework.stores.deviceStore.numHandles)
+    assertThrows[NoSuchElementException](shuffleCatalog.blockIdToMetas(block))
+    shuffleCatalog.unregisterShuffle(1)
+  }
+
   /** A block's list of buffer ids, which the catalog keeps private and locks for every change. */
   private def blockBufferIds(catalog: ShuffleBufferCatalog, block: ShuffleBlockId): AnyRef = {
     val field = classOf[ShuffleBufferCatalog].getDeclaredField("activeShuffles")

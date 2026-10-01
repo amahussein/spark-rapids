@@ -16,13 +16,15 @@
 
 package org.apache.spark.sql.rapids
 
+import java.util.concurrent.atomic.AtomicBoolean
+
 import scala.collection.mutable.ArrayBuffer
 import scala.util.{Failure, Success, Try}
 
-import ai.rapids.cudf.{Cuda, Rmm}
+import ai.rapids.cudf.{Cuda, MemoryBuffer, Rmm}
 import com.nvidia.spark.rapids.{GpuCompressedColumnVector, GpuPackedTableColumn, RapidsConf,
   RmmSparkRetrySuiteBase, ShuffleBufferCatalog, ShuffleBufferCatalogTestUtils,
-  TableCompressionCodec}
+  TableCompressionCodec, WithTableBuffer}
 import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.format.CodecType
@@ -334,5 +336,55 @@ class RapidsCachingWriterSuite extends RmmSparkRetrySuiteBase with MockitoSugar 
     catalog.unregisterShuffle(2)
     assertResult(0)(numDeviceHandles)
     assertConsistent(catalog, 0)
+  }
+
+  Seq(Packed, Compressed).foreach { kind =>
+    test(s"a failed writer leaves nothing behind when closing its $kind input fails") {
+      val catalog = new ShuffleBufferCatalog()
+      val survivors = Seq(Input(0, 10, Packed), Input(1, 11, Compressed))
+      succeed(newWriter(catalog, 1, 10L), survivors)
+      // an earlier attempt that shares the map id, as with spark.shuffle.useOldFetchProtocol=true,
+      // also owns the block whose add fails
+      val committed = Seq(Input(0, 12, Packed))
+      succeed(newWriter(catalog, 1, 11L), committed)
+      val deviceHandlesBefore = numDeviceHandles
+      val deviceBytesBefore = Rmm.getTotalBytesAllocated
+      val failed = newWriter(catalog, 1, 11L)
+      val cachedInput = Input(1, 31, Compressed)
+      val closeFailsInput = Input(0, 30, kind)
+      val cached = cachedInput.build()
+      val closeFails = closeFailsInput.build()
+      val buffer = closeFails.column(0).asInstanceOf[WithTableBuffer].getTableBuffer
+      val armed = new AtomicBoolean(true)
+      buffer.setEventHandler(new MemoryBuffer.EventHandler {
+        override def onClosed(refCount: Int): Unit = {
+          if (armed.getAndSet(false)) {
+            throw new IllegalStateException("injected input close failure")
+          }
+        }
+      })
+      try {
+        val e = intercept[IllegalStateException] {
+          failed.write(Iterator(1 -> cached, 0 -> closeFails))
+        }
+        assertResult("injected input close failure")(e.getMessage)
+        assert(failed.stop(false).isEmpty)
+        assertResult(deviceHandlesBefore, "device buffers left after the cleanup")(
+          numDeviceHandles)
+        assertResult(0, "references left on the input whose close failed")(buffer.getRefCount)
+        assertResult(deviceBytesBefore)(Rmm.getTotalBytesAllocated)
+        assertConsistent(catalog, survivors.size + committed.size)
+        assertGone(catalog, 1, 11L, Seq(cachedInput))
+        assertReadable(catalog, 1, 11L, committed)
+        assertReadable(catalog, 1, 10L, survivors)
+      } finally {
+        // The adds closed both inputs, and the failing close dropped its reference before it
+        // threw, so neither input is closed again here.
+        buffer.setEventHandler(null)
+        catalog.unregisterShuffle(1)
+      }
+      assertResult(0)(numDeviceHandles)
+      assertConsistent(catalog, 0)
+    }
   }
 }
