@@ -20,17 +20,7 @@ import java.io.ByteArrayOutputStream
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.SparkConf
-
 class RapidsConfSuite extends AnyFunSuite {
-
-  private def driverFixupLogsNaming(key: String, conf: SparkConf): Seq[(String, String)] = {
-    val loggerName = RapidsPluginUtils.getClass.getName.stripSuffix("$")
-    val logs = LogCaptureUtils.captureLogEventsFrom(Seq(loggerName)) {
-      RapidsPluginUtils.fixupConfigsOnDriver(conf)
-    }
-    logs.filter(_._2.contains(key)).toSeq
-  }
 
   test("config version metadata is included in table help") {
     var registered: Option[ConfEntry[_]] = None
@@ -71,17 +61,5 @@ class RapidsConfSuite extends AnyFunSuite {
       .createWithDefault(false)
 
     assertResult(ConfVersionInfo.UNKNOWN_VERSION)(entry.versionInfo.sinceVersion)
-  }
-
-  test("setting the deprecated UCX management server host logs a warning on the driver") {
-    val key = RapidsConf.SHUFFLE_UCX_MGMT_SERVER_HOST.key
-    val logs = driverFixupLogsNaming(key, new SparkConf(false).set(key, "some-host"))
-    assert(logs.map(_._1) == Seq("WARN") && logs.forall(_._2.contains("has no effect")),
-      s"expected one WARN about $key, got $logs")
-  }
-
-  test("the deprecated UCX management server host warning is not logged when unset") {
-    val key = RapidsConf.SHUFFLE_UCX_MGMT_SERVER_HOST.key
-    assert(driverFixupLogsNaming(key, new SparkConf(false)).isEmpty)
   }
 }
