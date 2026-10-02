@@ -252,10 +252,21 @@ object GpuDeviceManager extends Logging {
     conf.rmmPool.equalsIgnoreCase("ASYNC")
 
   /**
-   * Compute RMM pool size based on configuration and GPU memory info.
+   * Whether this process can start the UCX shuffle transport, and so allocate its bounce
+   * buffers: an executor with the RAPIDS shuffle manager configured, which may start it as late
+   * as its first shuffle. The driver, which also runs the executor in local mode, never does.
+   */
+  def ucxTransportCanStart(executorId: String, sparkConf: SparkConf): Boolean =
+    executorId != "driver" && GpuShuffleEnv.isRapidsShuffleConfigured(sparkConf)
+
+  /**
+   * Compute RMM pool size based on configuration and GPU memory info. Without a SparkEnv to
+   * tell, a UCX transport is assumed to be able to start.
    * Visible for testing.
    */
-  def computeRmmPoolSize(conf: RapidsConf, info: CudaMemInfo): Long = {
+  def computeRmmPoolSize(conf: RapidsConf, info: CudaMemInfo,
+      ucxTransportPossible: Boolean = Option(SparkEnv.get).forall(env =>
+        ucxTransportCanStart(env.executorId, env.conf))): Long = {
     def truncateToAlignment(x: Long): Long = x & ~511L
 
     // For integrated GPUs, we treat memory as shared between CPU and GPU
@@ -275,7 +286,8 @@ object GpuDeviceManager extends Logging {
       val minAllocation = truncateToAlignment((conf.rmmAllocMinFraction * availableGpuTotal).toLong)
       val maxAllocation = truncateToAlignment((conf.rmmAllocMaxFraction * availableGpuTotal).toLong)
       val ucxBounceBuffersReserve =
-        if (conf.isUCXShuffleManagerMode && ucxDeviceBounceBuffersOutsideRmm(conf)) {
+        if (conf.isUCXShuffleManagerMode && ucxTransportPossible &&
+            ucxDeviceBounceBuffersOutsideRmm(conf)) {
           // UCXShuffleTransport.initBounceBufferPools allocates two device bounce buffer pools
           // outside RMM, send and receive, each of shuffleUcxDeviceBounceBuffersCount buffers.
           2 * conf.shuffleUcxBounceBuffersSize * conf.shuffleUcxDeviceBounceBuffersCount
