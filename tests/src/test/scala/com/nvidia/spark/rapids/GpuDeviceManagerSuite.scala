@@ -489,8 +489,11 @@ class GpuDeviceManagerSuite extends AnyFunSuite with BeforeAndAfter {
   test("computeRmmPoolSize takes no UCX bounce buffer reserve on the driver") {
     try {
       GpuDeviceManager.setForceIntegratedGpuForTesting(false)
-      // local mode runs its executor on the driver, which never starts a UCX transport
-      SparkSession.builder().master("local[1]").getOrCreate()
+      // local mode runs its executor on the driver, which never starts a UCX transport, even
+      // with the RAPIDS shuffle manager configured
+      SparkSession.builder().master("local[1]")
+        .config("spark.shuffle.manager", GpuShuffleEnv.RAPIDS_SHUFFLE_CLASS)
+        .getOrCreate()
       assertResult(5824 * mib)(GpuDeviceManager.computeRmmPoolSize(minimumBoundaryConf(),
         TestCudaMemInfo.create(total = 16384 * mib, free = 12288 * mib)))
     } finally {
