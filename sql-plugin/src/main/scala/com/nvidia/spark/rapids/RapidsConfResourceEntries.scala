@@ -242,7 +242,7 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
     .doc("The fraction of total GPU memory that limits the maximum size of the RMM pool. " +
         s"The value must be greater than or equal to the setting for $RMM_ALLOC_FRACTION. " +
         "Note that this limit will be reduced by the reserve memory configured in " +
-        s"$RMM_ALLOC_RESERVE_KEY, and by the UCX shuffle's device bounce buffers when the RMM " +
+        s"$RMM_ALLOC_RESERVE_KEY, and by the UCX shuffle's GPU bounce buffers when the RMM " +
         "pool is ASYNC.")
     .startupOnly()
     .commonlyUsed()
@@ -263,7 +263,7 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
       .doc("The amount of GPU memory that should remain unallocated by RMM and left for " +
           "system use such as memory needed for kernels and kernel launches. When " +
           "spark.rapids.shuffle.mode is UCX and spark.rapids.memory.gpu.pool is ASYNC, the UCX " +
-          "shuffle's device bounce buffers are also left unallocated, in addition to this amount.")
+          "shuffle's GPU bounce buffers are reserved additionally.")
       .startupOnly()
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(ByteUnit.MiB.toBytes(640))
