@@ -245,6 +245,13 @@ object GpuDeviceManager extends Logging {
   private def toMiB(x: Long): Double = x / 1024 / 1024.0
 
   /**
+   * Whether the UCX transport allocates its device bounce buffers with `cudaMalloc`, outside
+   * RMM, because GPUDirect RDMA cannot use memory from the CUDA async allocator.
+   */
+  def ucxDeviceBounceBuffersOutsideRmm(conf: RapidsConf): Boolean =
+    conf.rmmPool.equalsIgnoreCase("ASYNC")
+
+  /**
    * Compute RMM pool size based on configuration and GPU memory info.
    * Visible for testing.
    */
@@ -268,10 +275,11 @@ object GpuDeviceManager extends Logging {
       val minAllocation = truncateToAlignment((conf.rmmAllocMinFraction * availableGpuTotal).toLong)
       val maxAllocation = truncateToAlignment((conf.rmmAllocMaxFraction * availableGpuTotal).toLong)
       val reserveAmount =
-        if (conf.isUCXShuffleManagerMode && conf.rmmPool.equalsIgnoreCase("ASYNC")) {
-          // When using the async allocator, UCX calls `cudaMalloc` directly to allocate the
-          // bounce buffers.
-          conf.rmmAllocReserve + conf.shuffleUcxBounceBuffersSize * 2
+        if (conf.isUCXShuffleManagerMode && ucxDeviceBounceBuffersOutsideRmm(conf)) {
+          // UCXShuffleTransport.initBounceBufferPools allocates two device bounce buffer pools
+          // outside RMM, send and receive, each of shuffleUcxDeviceBounceBuffersCount buffers.
+          conf.rmmAllocReserve +
+            2 * conf.shuffleUcxBounceBuffersSize * conf.shuffleUcxDeviceBounceBuffersCount
         } else {
           conf.rmmAllocReserve
         }
