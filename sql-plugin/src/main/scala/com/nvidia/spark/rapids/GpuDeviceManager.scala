@@ -274,29 +274,34 @@ object GpuDeviceManager extends Logging {
     conf.rmmExactAlloc.map(truncateToAlignment).getOrElse {
       val minAllocation = truncateToAlignment((conf.rmmAllocMinFraction * availableGpuTotal).toLong)
       val maxAllocation = truncateToAlignment((conf.rmmAllocMaxFraction * availableGpuTotal).toLong)
-      val reserveAmount =
+      val ucxBounceBuffersReserve =
         if (conf.isUCXShuffleManagerMode && ucxDeviceBounceBuffersOutsideRmm(conf)) {
           // UCXShuffleTransport.initBounceBufferPools allocates two device bounce buffer pools
           // outside RMM, send and receive, each of shuffleUcxDeviceBounceBuffersCount buffers.
-          conf.rmmAllocReserve +
-            2 * conf.shuffleUcxBounceBuffersSize * conf.shuffleUcxDeviceBounceBuffersCount
+          2 * conf.shuffleUcxBounceBuffersSize * conf.shuffleUcxDeviceBounceBuffersCount
         } else {
-          conf.rmmAllocReserve
+          0L
         }
+      val reserveAmount = conf.rmmAllocReserve + ucxBounceBuffersReserve
+      val reserveDetails = s"${RapidsConf.RMM_ALLOC_RESERVE}: ${toMiB(conf.rmmAllocReserve)} MiB" +
+        (if (ucxBounceBuffersReserve > 0) {
+          s" plus ${toMiB(ucxBounceBuffersReserve)} MiB of UCX bounce buffers"
+        } else {
+          ""
+        })
       val availableFree = Math.min(info.free, availableGpuTotal)
       logInfo(s"availableGpuFree: ${toMiB(availableFree)} MiB")
       var poolAllocation = truncateToAlignment(
         (conf.rmmAllocFraction * (availableFree - reserveAmount)).toLong)
       val errorPhrase = "The pool allocation of " +
-        s"${toMiB(poolAllocation)} MiB (gpu.free: ${toMiB(availableFree)}," +
-        s"${RapidsConf.RMM_ALLOC_FRACTION}: (=${conf.rmmAllocFraction}," +
-        s"${RapidsConf.RMM_ALLOC_RESERVE}: ${reserveAmount} => " +
-        s"(gpu.free - reserve) * allocFraction = ${toMiB(poolAllocation)}) was "
+        s"${toMiB(poolAllocation)} MiB (gpu.free: ${toMiB(availableFree)} MiB, " +
+        s"${RapidsConf.RMM_ALLOC_FRACTION}: ${conf.rmmAllocFraction}, $reserveDetails => " +
+        s"(gpu.free - reserve) * allocFraction = ${toMiB(poolAllocation)} MiB) was "
       if (poolAllocation < minAllocation) {
         throw new IllegalArgumentException(errorPhrase +
             s"less than allocation of ${toMiB(minAllocation)} MiB (gpu.total: " +
             s"${toMiB(availableGpuTotal)} MiB, ${RapidsConf.RMM_ALLOC_MIN_FRACTION}: " +
-            s"${conf.rmmAllocMinFraction} => gpu.total *" +
+            s"${conf.rmmAllocMinFraction} => gpu.total * " +
             s"minAllocFraction = ${toMiB(minAllocation)} MiB). Please ensure that the GPU has " +
             s"enough free memory, or adjust configuration accordingly.")
       }
@@ -304,15 +309,15 @@ object GpuDeviceManager extends Logging {
         throw new IllegalArgumentException(errorPhrase +
             s"more than allocation of ${toMiB(maxAllocation)} MiB (gpu.total: " +
             s"${toMiB(availableGpuTotal)} MiB, ${RapidsConf.RMM_ALLOC_MAX_FRACTION}: " +
-            s"${conf.rmmAllocMaxFraction} => gpu.total *" +
+            s"${conf.rmmAllocMaxFraction} => gpu.total * " +
             s"maxAllocFraction = ${toMiB(maxAllocation)} MiB). Please ensure that pool " +
             s"allocation does not exceed maximum allocation and adjust configuration accordingly.")
       }
       if (reserveAmount >= maxAllocation) {
         throw new IllegalArgumentException(s"RMM reserve memory (${toMiB(reserveAmount)} MB) " +
             s"larger than maximum pool size (${toMiB(maxAllocation)} MB). Check the settings for " +
-            s"${RapidsConf.RMM_ALLOC_MAX_FRACTION} (=${conf.rmmAllocFraction}) and " +
-            s"${RapidsConf.RMM_ALLOC_RESERVE} (=$reserveAmount)")
+            s"${RapidsConf.RMM_ALLOC_MAX_FRACTION} (=${conf.rmmAllocMaxFraction}) and the " +
+            s"reserve ($reserveDetails)")
       }
       val adjustedMaxAllocation = truncateToAlignment(maxAllocation - reserveAmount)
       if (poolAllocation > adjustedMaxAllocation) {
