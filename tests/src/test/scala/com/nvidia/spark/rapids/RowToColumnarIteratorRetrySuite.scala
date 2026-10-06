@@ -464,10 +464,9 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
       intIsNull: Int => Boolean,
       stringIsNull: Int => Boolean,
       valueSize: Int => Int) {
-    def values(n: Int): Array[Any] = Array[Any](if (intIsNull(n)) null else n,
-      if (stringIsNull(n)) null else UTF8String.fromBytes(repeatedDigits(n, valueSize(n))))
-
-    def row(n: Int): InternalRow = new GenericInternalRow(values(n))
+    def row(n: Int): InternalRow = new GenericInternalRow(Array[Any](
+      if (intIsNull(n)) null else n,
+      if (stringIsNull(n)) null else UTF8String.fromBytes(repeatedDigits(n, valueSize(n)))))
 
     def iterator(numRows: Int): Iterator[InternalRow] = (1 to numRows).iterator.map(n => row(n))
   }
