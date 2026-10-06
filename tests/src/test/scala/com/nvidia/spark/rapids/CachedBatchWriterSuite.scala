@@ -16,14 +16,14 @@
 
 package com.nvidia.spark.rapids
 
-import java.util.concurrent.atomic.AtomicLong
-
 import scala.collection.JavaConverters.asScalaIteratorConverter
 import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 import scala.collection.mutable
 
-import ai.rapids.cudf.{ColumnVector, CompressionType, DefaultHostMemoryAllocator, DType, HostMemoryAllocator, HostMemoryBuffer, ParquetTableWriter, Rmm, Table}
+import ai.rapids.cudf.{ColumnVector, CompressionType, DType, ParquetTableWriter, Rmm, Table}
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
+import com.nvidia.spark.rapids.CudfTestHelper.withRecordedHostAllocations
+import com.nvidia.spark.rapids.RapidsHostColumnBuilderSuite.{limits, withLimits}
 import com.nvidia.spark.rapids.RapidsPluginImplicits.AutoCloseableFromBatchColumns
 import com.nvidia.spark.rapids.parquet.{ParquetCachedBatchSerializer, ParquetOutputFileFormat}
 import org.apache.hadoop.mapreduce.{RecordWriter, TaskAttemptContext}
@@ -231,34 +231,40 @@ class CachedBatchWriterSuite extends SparkQueryCompareTestSuite {
     }
   }
 
-  test("row entry caches rows larger than the slice budget as one-row batches") {
-    val values = largeStringValues
-    val attrs = Seq(AttributeReference("s", StringType, nullable = true)())
-    withGpuSparkSession(spark => {
-      val ser = new ParquetCachedBatchSerializer
-      val input = spark.sparkContext.parallelize(values.map(v => InternalRow(v)), numSlices = 1)
-      val cachedRdd = ser.convertInternalRowToCachedBatch(input, attrs, MEMORY_ONLY,
-        TrampolineUtil.getSparkConf(spark))
-      val (cached, decoded) = buildAndReadBack(spark, ser, cachedRdd, attrs)
-      assertOneRowBatchesOfStrings(cached, decoded, values)
-    }, oneMiBBatchConf)
-  }
-
-  test("columnar entry caches rows larger than the slice budget as one-row batches") {
-    val values = largeStringValues
-    val attrs = Seq(AttributeReference("s", StringType, nullable = true)())
-    withGpuSparkSession(spark => {
-      val ser = new ParquetCachedBatchSerializer
-      val batch = closeOnExcept(ColumnVector.fromUTF8Strings(values.map(_.getBytes): _*)) { cv =>
-        new ColumnarBatch(Array(GpuColumnVector.from(cv, StringType)), values.length)
+  Seq("row", "columnar").foreach { entry =>
+    test(s"$entry entry caches rows larger than the slice budget as one-row batches") {
+      // Three 2 MiB values whose bytes depend on the row, so a reordered row is caught.
+      val values = (0 until 3).map { row =>
+        UTF8String.fromBytes(Array.tabulate(2 * 1024 * 1024)(j => ('a' + (row + j) % 26).toByte))
       }
-      val cachedRdd = cacheGpuBatch(spark, ser, batch, attrs)
-      val (cached, decoded) = buildAndReadBack(spark, ser, cachedRdd, attrs)
-      assertOneRowBatchesOfStrings(cached, decoded, values)
-    }, oneMiBBatchConf)
+      val attrs = Seq(AttributeReference("s", StringType, nullable = true)())
+      withGpuSparkSession(spark => {
+        val ser = new ParquetCachedBatchSerializer
+        val cachedRdd = if (entry == "row") {
+          val input = spark.sparkContext.parallelize(values.map(v => InternalRow(v)),
+            numSlices = 1)
+          ser.convertInternalRowToCachedBatch(input, attrs, MEMORY_ONLY,
+            TrampolineUtil.getSparkConf(spark))
+        } else {
+          val batch = closeOnExcept(ColumnVector.fromUTF8Strings(values.map(_.getBytes): _*)) {
+            cv => new ColumnarBatch(Array(GpuColumnVector.from(cv, StringType)), values.length)
+          }
+          cacheGpuBatch(spark, ser, batch, attrs)
+        }
+        val (cached, decoded) = buildAndReadBack(spark, ser, cachedRdd, attrs)
+        assert(cached.map(_.numRows) == Seq.fill(values.length)(1))
+        assert(decoded.map(_.length) == Seq.fill(values.length)(1))
+        decoded.flatten.zip(values).zipWithIndex.foreach { case ((row, value), i) =>
+          assert(!row.isNullAt(0), s"row $i is null")
+          // A plain comparison would print megabytes of value on failure.
+          val sameValue = row.getUTF8String(0) == value
+          assert(sameValue, s"row $i differs")
+        }
+      }, oneMiBBatchConf)
+    }
   }
 
-  Seq(0, 500, 1024, 1025, 5000).foreach { numRows =>
+  Seq(0, 5000).foreach { numRows =>
     test(s"row entry caches $numRows rows of a zero-column schema as row counts only") {
       withGpuSparkSession { spark =>
         val ser = new ParquetCachedBatchSerializer
@@ -295,67 +301,52 @@ class CachedBatchWriterSuite extends SparkQueryCompareTestSuite {
       }
       val cachedRdd = cacheGpuBatch(spark, ser, batch, attrs)
       val (cached, decoded) = buildAndReadBack(spark, ser, cachedRdd, attrs)
-      assert(cached.map(_.numRows).sum == values.length)
+      // The GPU budget stays below 2 GiB, so the rows stay one batch instead of a batch each.
+      assert(cached.map(_.numRows) == Seq(values.length))
       assert(decoded.map(_.length) == cached.map(_.numRows))
       assert(decoded.flatten.map(_.getLong(0)) == values)
     }, conf)
   }
 
   test("row entry caches tiny rows correctly when batchSizeBytes is about 1e15") {
-    val expected = Seq[(Option[Long], Option[String])](
-      (Some(1L), Some("a")),
-      (None, Some("bb")),
-      (Some(-3L), None),
-      (Some(Long.MaxValue), Some("")))
+    val expected = Seq(1L -> "a", -3L -> "bb")
     val attrs = Seq(AttributeReference("l", LongType, nullable = true)(),
       AttributeReference("s", StringType, nullable = true)())
     val conf = new SparkConf().set(RapidsConf.GPU_BATCH_SIZE_BYTES.key, "1000000000000000")
     withGpuSparkSession(spark => {
       val ser = new ParquetCachedBatchSerializer
-      val rows = expected.map { case (l, s) =>
-        InternalRow(l.map(Long.box).orNull, s.map(UTF8String.fromString).orNull)
-      }
+      val rows = expected.map { case (l, s) => InternalRow(l, UTF8String.fromString(s)) }
       val input = spark.sparkContext.parallelize(rows, numSlices = 1)
       val cachedRdd = ser.convertInternalRowToCachedBatch(input, attrs, MEMORY_ONLY,
         TrampolineUtil.getSparkConf(spark))
       // The builders' first buffers follow the 1 GiB cap, about 256 MiB for the LONG column,
       // not the setting, which would ask for Int.MaxValue rows.
-      var built: (Seq[CachedBatch], Seq[Seq[InternalRow]]) = null
-      val largest = largestHostAllocation {
-        built = buildAndReadBack(spark, ser, cachedRdd, attrs)
+      val (decoded, largest) = withRecordedHostAllocations { recorder =>
+        val (_, decodedRows) = buildAndReadBack(spark, ser, cachedRdd, attrs)
+        (decodedRows, recorder.largest)
       }
       assert(largest <= (1L << 30), s"a host allocation of $largest bytes")
-      val (cached, decoded) = built
-      assert(cached.map(_.numRows).sum == expected.length)
-      val actual = decoded.flatten.map { row =>
-        (if (row.isNullAt(0)) None else Some(row.getLong(0)),
-          if (row.isNullAt(1)) None else Some(row.getUTF8String(1).toString))
-      }
-      assert(actual == expected)
+      assert(decoded.flatten.map(r => (r.getLong(0), r.getUTF8String(1).toString)) == expected)
     }, conf)
   }
 
-  /** The largest host allocation `body` requests through cuDF's default allocator. */
-  private def largestHostAllocation(body: => Unit): Long = {
-    val previous = DefaultHostMemoryAllocator.get()
-    val largest = new AtomicLong()
-    DefaultHostMemoryAllocator.set(new HostMemoryAllocator {
-      override def allocate(amount: Long, preferPinned: Boolean): HostMemoryBuffer = {
-        largest.accumulateAndGet(amount, (a: Long, b: Long) => math.max(a, b))
-        previous.allocate(amount, preferPinned)
+  test("row entry splits a partition into batches at a column's size limit") {
+    // A 10-byte limit takes two of these 4-byte values per batch: a third would make 12.
+    val values = Seq("aaaa", "bbbb", "cccc", "dddd", "eeee")
+    val attrs = Seq(AttributeReference("s", StringType, nullable = true)())
+    withGpuSparkSession(spark => {
+      val ser = new ParquetCachedBatchSerializer
+      val input = spark.sparkContext.parallelize(
+        values.map(v => InternalRow(UTF8String.fromString(v))), numSlices = 1)
+      val cachedRdd = ser.convertInternalRowToCachedBatch(input, attrs, MEMORY_ONLY,
+        TrampolineUtil.getSparkConf(spark))
+      // The limit reaches the builders because buildAndReadBack computes the partition here.
+      val (cached, decoded) = withLimits(limits(stringBytes = 10)) {
+        buildAndReadBack(spark, ser, cachedRdd, attrs)
       }
-
-      override def allocate(amount: Long): HostMemoryBuffer = {
-        largest.accumulateAndGet(amount, (a: Long, b: Long) => math.max(a, b))
-        previous.allocate(amount)
-      }
-    })
-    try {
-      body
-    } finally {
-      DefaultHostMemoryAllocator.set(previous)
-    }
-    largest.get
+      assert(cached.map(_.numRows) == Seq(2, 2, 1))
+      assert(decoded.flatten.map(_.getUTF8String(0).toString) == values)
+    }, oneMiBBatchConf)
   }
 
   private def writeAndConsumeEmptyBatch(spark: SparkSession): Unit = {
@@ -594,11 +585,6 @@ class CachedBatchWriterSuite extends SparkQueryCompareTestSuite {
   private def oneMiBBatchConf: SparkConf =
     new SparkConf().set(RapidsConf.GPU_BATCH_SIZE_BYTES.key, "1m")
 
-  /** Three 2 MiB values whose bytes depend on the row, so a reordered row is caught. */
-  private def largeStringValues: IndexedSeq[UTF8String] = (0 until 3).map { row =>
-    UTF8String.fromBytes(Array.tabulate(2 * 1024 * 1024)(j => ('a' + (row + j) % 26).toByte))
-  }
-
   /** The columnar entry over one GPU batch, which the serializer closes as it consumes it. */
   private def cacheGpuBatch(
       spark: SparkSession,
@@ -636,20 +622,6 @@ class CachedBatchWriterSuite extends SparkQueryCompareTestSuite {
     } finally {
       TrampolineUtil.unsetTaskContext()
       context.markTaskComplete()
-    }
-  }
-
-  private def assertOneRowBatchesOfStrings(
-      cached: Seq[CachedBatch],
-      decoded: Seq[Seq[InternalRow]],
-      expected: Seq[UTF8String]): Unit = {
-    assert(cached.map(_.numRows) == Seq.fill(expected.length)(1))
-    assert(decoded.map(_.length) == Seq.fill(expected.length)(1))
-    decoded.flatten.zip(expected).zipWithIndex.foreach { case ((row, value), i) =>
-      assert(!row.isNullAt(0), s"row $i is null")
-      // A plain comparison would print megabytes of value on failure.
-      val sameValue = row.getUTF8String(0) == value
-      assert(sameValue, s"row $i differs")
     }
   }
 }

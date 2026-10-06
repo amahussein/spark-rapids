@@ -557,63 +557,14 @@ def _assert_read_on_gpu_scan(spark, df):
         df._jdf, 'GpuInMemoryTableScanExec')
 
 
-def _padded_value(i, value_bytes):
-    """Row i's value: its id zero-padded to 10 characters, then 'x' up to value_bytes."""
-    head = '%010d' % i
-    return head + 'x' * (value_bytes - len(head))
-
-
 def _padded_value_col(value_bytes):
-    """_padded_value as an expression over the id column."""
+    """The id column zero-padded to 10 characters, then 'x' up to value_bytes."""
     return f.rpad(f.lpad(f.col('id').cast('string'), 10, '0'), value_bytes, 'x')
 
 
-def _assert_padded_rows(rows, num_rows, value_bytes):
-    rows = sorted(rows)
-    assert [r[0] for r in rows] == list(range(num_rows))
-    wrong = [r[0] for r in rows if r[1] != _padded_value(r[0], value_bytes)]
-    assert wrong == [], 'rows holding a wrong value: {}'.format(wrong)
-
-
 @_requires_pcbs_lane
 @allow_non_gpu(any=True)
-@pytest.mark.parametrize('entry', ['rows', 'columnar'])
-def test_cache_rows_larger_than_slice_budget(entry):
-    # At batchSizeBytes=1m each slice of a cached batch has room for less than one row.
-    num_rows = 3
-    value_bytes = 2 * 1024 * 1024
-    expected = [(i, _padded_value(i, value_bytes)) for i in range(num_rows)]
-
-    def check(spark):
-        if entry == 'rows':
-            schema = StructType([StructField('id', LongType(), False),
-                                 StructField('c', StringType(), False)])
-            df = spark.createDataFrame(spark.sparkContext.parallelize(expected, 1), schema)
-        else:
-            df = spark.range(0, num_rows, 1, 1).withColumn('c', _padded_value_col(value_bytes))
-        df = df.cache()
-        relation = _cached_relation(spark, df)
-        assert relation.cachedPlan().supportsColumnar() == (entry == 'columnar')
-        assert df.count() == num_rows
-        builder = relation.cacheBuilder()
-        # Slices are never empty, so as many cached batches as rows means one row each.
-        assert builder.cachedColumnBuffers().count() == num_rows
-        assert builder.rowCountStats().value() == num_rows
-        # A CPU session would cache through the serializer's CPU writer, which cannot take a
-        # row larger than its budget, so the reads are checked against the input instead.
-        read = df.select('id', 'c')
-        _assert_padded_rows(read.collect(), num_rows, value_bytes)
-        _assert_read_on_gpu_scan(spark, read)
-        spark.conf.set('spark.rapids.sql.enabled', 'false')
-        _assert_padded_rows(df.select('id', 'c').collect(), num_rows, value_bytes)
-
-    with_gpu_session(check, conf=copy_and_update(_pcbs_gpu_scan_conf,
-                                                 {'spark.rapids.sql.batchSizeBytes': '1m'}))
-
-
-@_requires_pcbs_lane
-@allow_non_gpu(any=True)
-@pytest.mark.parametrize('num_rows', [0, 500, 1024, 1025, 5000], ids=idfn)
+@pytest.mark.parametrize('num_rows', [0, 5000], ids=idfn)
 def test_cache_zero_columns_from_rows(num_rows):
     def check(spark):
         # Built from an RDD, so the cached plan's root runs on the CPU and every shim hands

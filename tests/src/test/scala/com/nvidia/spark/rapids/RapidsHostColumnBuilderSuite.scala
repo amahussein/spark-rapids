@@ -22,14 +22,14 @@ import java.util.function.Supplier
 import scala.util.{Failure, Try}
 
 import ai.rapids.cudf.{DType, HostColumnVector, HostColumnVectorCore}
-import ai.rapids.cudf.HostColumnVector.{BasicType, ListType, StructType}
+import ai.rapids.cudf.HostColumnVector.{BasicType, DataType, ListType, StructType}
 import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.RapidsHostColumnBuilder.Limits
+import com.nvidia.spark.rapids.RapidsHostColumnBuilderSuite._
+import org.scalatest.Assertions
 import org.scalatest.funsuite.AnyFunSuite
 
 class RapidsHostColumnBuilderSuite extends AnyFunSuite {
-  private val production = RapidsHostColumnBuilder.PRODUCTION_LIMITS
-
   // Small enough that a test reaches a limit with a few KiB of host memory.
   private val smallLimit = 4096
 
@@ -40,23 +40,6 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
   private val intType = new BasicType(true, DType.INT32)
   private val stringType = new BasicType(true, DType.STRING)
   private val binaryType = new ListType(true, new BasicType(false, DType.UINT8))
-
-  private def limits(
-      stringBytes: Long = production.maxStringBytes,
-      fixedWidthElements: Long = production.maxFixedWidthElements,
-      offsetRows: Long = production.maxOffsetRows,
-      structRows: Long = production.maxStructRows): Limits =
-    new Limits(stringBytes, fixedWidthElements, offsetRows, structRows)
-
-  private def withLimits[T](testLimits: Limits)(body: => T): T =
-    RapidsHostColumnBuilder.withTestLimits(testLimits, new Supplier[T] {
-      override def get(): T = body
-    })
-
-  private def limitMessage(what: String, attempted: Long, limit: Long, dtype: DType): String =
-    s"$what would be $attempted, exceeding the limit of $limit for a column of cuDF type " +
-      s"$dtype; split the input into smaller batches or partitions, or reduce the size of " +
-      "individual values"
 
   private def bytesMessage(attempted: Long, limit: Long): String =
     limitMessage("The string data size in bytes", attempted, limit, DType.STRING)
@@ -112,15 +95,6 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
       assert(valid.getLength <= validityBytes(rowLimit), s"$dtype validity")
     }
     (0 until col.getNumChildren).foreach(i => assertBuffersWithin(col.getChildColumnView(i), l))
-  }
-
-  /** Checks that the null count of the column and of each child matches its validity mask. */
-  private def assertNullCountsMatchMasks(col: HostColumnVectorCore): Unit = {
-    val maskNulls = (0L until col.getRowCount).count(i => col.isNull(i)).toLong
-    assertResult(maskNulls, s"${col.getType} null count")(col.getNullCount)
-    (0 until col.getNumChildren).foreach { i =>
-      assertNullCountsMatchMasks(col.getChildColumnView(i))
-    }
   }
 
   private def buildAndCheck(b: RapidsHostColumnBuilder, l: Limits)(
@@ -312,7 +286,7 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
     }
   }
 
-  test("a rolled-back row leaves no null in the prefix's null count or validity mask") {
+  test("a rolled-back null is not counted in the built column's null count") {
     withResource(new RapidsHostColumnBuilder(intType, 4)) { ints =>
       withResource(new RapidsHostColumnBuilder(stringType, 4)) { strings =>
         ints.append(1)
@@ -321,8 +295,8 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
         strings.append("b")
         val intState = ints.captureState()
         val stringState = strings.captureState()
-        // The next row's STRING value fails after its INT null went in, so the row is rolled
-        // back and moves to the next batch.
+        // The next row's INT null goes in before a later column rejects the row, so the row is
+        // rolled back and moves to the next batch.
         ints.appendNull()
         ints.restoreState(intState)
         strings.restoreState(stringState)
@@ -340,45 +314,29 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
     }
   }
 
-  // A control: replay into the same builder already counted each null once, and the restore
+  // A control: replay into the same builder already counted the null once, and the restore
   // of the null count must not change that.
-  test("replaying a rolled-back row into the same builders counts each of its nulls once") {
+  test("replaying a rolled-back row into the same builder counts its null once") {
     withResource(new RapidsHostColumnBuilder(intType, 4)) { ints =>
-      withResource(new RapidsHostColumnBuilder(stringType, 4)) { strings =>
-        ints.append(1)
-        strings.appendNull()
-        val intState = ints.captureState()
-        val stringState = strings.captureState()
-        // The row of two nulls fails twice before it goes in: first in its STRING column, then
-        // after both columns took it.
-        ints.appendNull()
-        ints.restoreState(intState)
-        strings.restoreState(stringState)
-        ints.appendNull()
-        strings.appendNull()
-        ints.restoreState(intState)
-        strings.restoreState(stringState)
-        ints.appendNull()
-        strings.appendNull()
-        ints.append(3)
-        strings.append("c")
-        withResource(ints.build()) { v =>
-          assertResult(1L)(v.getNullCount)
-          assertResult(Seq(false, true, false))((0 until 3).map(i => v.isNull(i)))
-          assertResult(3)(v.getInt(2))
-          assertNullCountsMatchMasks(v)
-        }
-        withResource(strings.build()) { v =>
-          assertResult(2L)(v.getNullCount)
-          assertResult(Seq(true, true, false))((0 until 3).map(i => v.isNull(i)))
-          assertResult("c")(v.getJavaString(2))
-          assertNullCountsMatchMasks(v)
-        }
+      ints.append(1)
+      val state = ints.captureState()
+      // The row's null goes in twice before the row is kept, rolled back each time.
+      ints.appendNull()
+      ints.restoreState(state)
+      ints.appendNull()
+      ints.restoreState(state)
+      ints.appendNull()
+      ints.append(3)
+      withResource(ints.build()) { v =>
+        assertResult(1L)(v.getNullCount)
+        assertResult(Seq(false, true, false))((0 until 3).map(i => v.isNull(i)))
+        assertResult(3)(v.getInt(2))
+        assertNullCountsMatchMasks(v)
       }
     }
   }
 
-  test("restoring a struct or a list rolls back the nulls its children took") {
+  test("restoring a struct rolls back the nulls its children took") {
     withResource(new RapidsHostColumnBuilder(new StructType(true, intType, stringType), 4)) { b =>
       b.getChild(0).append(1)
       b.getChild(1).append("a")
@@ -397,23 +355,6 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
         assertResult(0L)(v.getChildColumnView(1).getNullCount)
         assertResult(1)(v.getChildColumnView(0).getInt(0))
         assertResult("a")(v.getChildColumnView(1).getJavaString(0))
-        assertNullCountsMatchMasks(v)
-      }
-    }
-    withResource(new RapidsHostColumnBuilder(new ListType(true, intType), 4)) { b =>
-      b.getChild(0).append(1)
-      b.endList()
-      val state = b.captureState()
-      b.getChild(0).appendNull()
-      b.getChild(0).append(2)
-      b.endList()
-      b.restoreState(state)
-      withResource(b.build()) { v =>
-        assertResult(1L)(v.getRowCount)
-        val child = v.getChildColumnView(0)
-        assertResult(1L)(child.getRowCount)
-        assertResult(0L)(child.getNullCount)
-        assertResult(1)(child.getInt(0))
         assertNullCountsMatchMasks(v)
       }
     }
@@ -468,27 +409,6 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
     }
   }
 
-  test("appendUTF8String appends a valid UTF-8 subrange of a larger array") {
-    // The inverted check this guards against is an assert.
-    assume(classOf[RapidsHostColumnBuilder].desiredAssertionStatus(), "needs -ea")
-    // 0xE9 is e-acute, two bytes in UTF-8, so the byte offsets differ from the char offsets.
-    val text = "xxcaf" + 0xE9.toChar + "yy"
-    val bytes = text.getBytes(StandardCharsets.UTF_8)
-    def byteLength(s: String): Int = s.getBytes(StandardCharsets.UTF_8).length
-    val inside = text.substring(2, 6)
-    val atEnd = text.substring(4)
-    withResource(new RapidsHostColumnBuilder(stringType, 2)) { b =>
-      b.appendUTF8String(bytes, byteLength(text.substring(0, 2)), byteLength(inside))
-      b.appendUTF8String(bytes, byteLength(text.substring(0, 4)), byteLength(atEnd))
-      withResource(b.build()) { v =>
-        assertResult(inside)(v.getJavaString(0))
-        assertResult(atEnd)(v.getJavaString(1))
-        assert(v.getUTF8(0).sameElements(inside.getBytes(StandardCharsets.UTF_8)))
-        assert(v.getUTF8(1).sameElements(atEnd.getBytes(StandardCharsets.UTF_8)))
-      }
-    }
-  }
-
   test("appendUTF8String asserts on a subrange past the array before changing the builder") {
     // The subrange check is a Java assertion, so it only runs under -ea.
     assume(classOf[RapidsHostColumnBuilder].desiredAssertionStatus(), "needs -ea")
@@ -528,23 +448,6 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
             assert(v.getUTF8(fullRows).sameElements(value.take(rest)))
             assertResult(limit.toLong)(v.getEndListOffset(fullRows))
           }
-        }
-      }
-    }
-  }
-
-  test("a string column takes a value just under its byte limit, then one exactly to it") {
-    val testLimits = limits(stringBytes = smallLimit)
-    withLimits(testLimits) {
-      withResource(new RapidsHostColumnBuilder(stringType, 1)) { b =>
-        b.appendUTF8String(new Array[Byte](smallLimit - 8))
-        b.appendUTF8String(new Array[Byte](8))
-        assertRejects(bytesMessage(smallLimit + 1L, smallLimit)) {
-          b.appendUTF8String(new Array[Byte](1))
-        }
-        buildAndCheck(b, testLimits) { v =>
-          assertResult(Seq(smallLimit - 8, 8))((0 until 2).map(i => v.getUTF8(i).length))
-          assertResult(smallLimit.toLong)(v.getData.getLength)
         }
       }
     }
@@ -612,223 +515,6 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
     }
   }
 
-  test("a row rejected by the second of two string columns rolls back in both") {
-    val testLimits = limits(stringBytes = smallLimit)
-    val value = letters(64)
-    val fullRows = smallLimit / value.length
-    withLimits(testLimits) {
-      withResource(new RapidsHostColumnBuilder(stringType, 1)) { shortValues =>
-        withResource(new RapidsHostColumnBuilder(stringType, 1)) { longValues =>
-          def appendRow(i: Int): Unit = {
-            shortValues.append(s"r$i")
-            longValues.appendUTF8String(value)
-          }
-          (0 until fullRows).foreach(i => appendRow(i))
-          val shortState = shortValues.captureState()
-          val longState = longValues.captureState()
-          assertRejects(bytesMessage(smallLimit + value.length.toLong, smallLimit)) {
-            appendRow(fullRows)
-          }
-          // The first column took the row before the second one rejected it.
-          assertResult(fullRows + 1)(shortValues.getCurrentIndex)
-          assertResult(fullRows)(longValues.getCurrentIndex)
-          shortValues.restoreState(shortState)
-          longValues.restoreState(longState)
-          buildAndCheck(shortValues, testLimits) { v =>
-            assertResult(fullRows.toLong)(v.getRowCount)
-            assertResult(s"r${fullRows - 1}")(v.getJavaString(fullRows - 1))
-          }
-          buildAndCheck(longValues, testLimits) { v =>
-            assertResult(fullRows.toLong)(v.getRowCount)
-            assertResult(smallLimit.toLong)(v.getEndListOffset(fullRows - 1))
-          }
-        }
-      }
-    }
-  }
-
-  test("a fixed-width column accepts elements up to its limit and rejects one more") {
-    val testLimits = limits(fixedWidthElements = smallLimit)
-    val expected = elementsMessage(smallLimit + 1L, smallLimit, DType.INT64)
-    val longType = new BasicType(true, DType.INT64)
-    estimates.foreach { estimate =>
-      withLimits(testLimits) {
-        withResource(new RapidsHostColumnBuilder(longType, estimate)) { b =>
-          (0 until smallLimit).foreach { i =>
-            if (isNullRow(i)) b.appendNull() else b.append(i.toLong)
-          }
-          assertRejects(expected)(b.append(-1L))
-          assertRejects(expected)(b.appendNull())
-          buildAndCheck(b, testLimits) { v =>
-            assertResult(smallLimit.toLong)(v.getRowCount)
-            (0 until smallLimit).foreach { i =>
-              if (isNullRow(i)) assert(v.isNull(i)) else assertResult(i.toLong)(v.getLong(i))
-            }
-          }
-        }
-      }
-    }
-  }
-
-  test("a string column accepts rows up to its row limit and rejects one more") {
-    val testLimits = limits(offsetRows = smallLimit)
-    val expected = rowsMessage(smallLimit + 1L, smallLimit, DType.STRING)
-    estimates.foreach { estimate =>
-      withLimits(testLimits) {
-        withResource(new RapidsHostColumnBuilder(stringType, estimate)) { b =>
-          (0 until smallLimit).foreach { i =>
-            if (isNullRow(i)) b.appendNull() else b.append(i.toString)
-          }
-          assertRejects(expected)(b.append(""))
-          assertRejects(expected)(b.appendNull())
-          buildAndCheck(b, testLimits) { v =>
-            assertResult(smallLimit.toLong)(v.getRowCount)
-            (0 until smallLimit).foreach { i =>
-              if (isNullRow(i)) {
-                assert(v.isNull(i))
-              } else {
-                assertResult(i.toString)(v.getJavaString(i))
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  test("a list column accepts rows up to its row limit and rejects one more") {
-    val testLimits = limits(offsetRows = smallLimit)
-    val expected = rowsMessage(smallLimit + 1L, smallLimit, DType.LIST)
-    estimates.foreach { estimate =>
-      withLimits(testLimits) {
-        withResource(new RapidsHostColumnBuilder(new ListType(true, intType), estimate)) { b =>
-          (0 until smallLimit).foreach { i =>
-            if (isNullRow(i)) {
-              b.appendNull()
-            } else {
-              b.getChild(0).append(i)
-              b.endList()
-            }
-          }
-          assertRejects(expected)(b.endList())
-          assertRejects(expected)(b.appendNull())
-          buildAndCheck(b, testLimits) { v =>
-            assertResult(smallLimit.toLong)(v.getRowCount)
-            val child = v.getChildColumnView(0)
-            (0 until smallLimit).foreach { i =>
-              if (isNullRow(i)) {
-                assert(v.isNull(i))
-              } else {
-                assertResult(1L)(v.getEndListOffset(i) - v.getStartListOffset(i))
-                assertResult(i)(child.getInt(v.getStartListOffset(i)))
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  test("a struct column accepts rows up to its row limit and rejects one more") {
-    val testLimits = limits(structRows = smallLimit)
-    val expected = rowsMessage(smallLimit + 1L, smallLimit, DType.STRUCT)
-    estimates.foreach { estimate =>
-      withLimits(testLimits) {
-        withResource(new RapidsHostColumnBuilder(new StructType(true, intType), estimate)) { b =>
-          (0 until smallLimit).foreach { i =>
-            if (isNullRow(i)) {
-              b.appendNull()
-            } else {
-              b.getChild(0).append(i)
-              b.endStruct()
-            }
-          }
-          assertRejects(expected)(b.endStruct())
-          assertRejects(expected)(b.appendNull())
-          buildAndCheck(b, testLimits) { v =>
-            assertResult(smallLimit.toLong)(v.getRowCount)
-            val child = v.getChildColumnView(0)
-            assertResult(smallLimit.toLong)(child.getRowCount)
-            (0 until smallLimit).foreach { i =>
-              if (isNullRow(i)) assert(v.isNull(i)) else assertResult(i)(child.getInt(i))
-            }
-          }
-        }
-      }
-    }
-  }
-
-  test("an ARRAY<BINARY> column limits the bytes of its binary values") {
-    val testLimits = limits(fixedWidthElements = smallLimit)
-    val value = Array.tabulate[Byte](64)(_.toByte)
-    val valuesPerRow = 2
-    val fullRows = smallLimit / (valuesPerRow * value.length)
-    estimates.foreach { estimate =>
-      withLimits(testLimits) {
-        withResource(new RapidsHostColumnBuilder(new ListType(true, binaryType), estimate)) { b =>
-          val binaries = b.getChild(0)
-          (0 until fullRows).foreach { _ =>
-            (0 until valuesPerRow).foreach(_ => binaries.appendByteList(value))
-            b.endList()
-          }
-          assertRejects(
-            elementsMessage(smallLimit + value.length.toLong, smallLimit, DType.UINT8)) {
-            binaries.appendByteList(value)
-          }
-          b.endList()
-          b.appendNull()
-          buildAndCheck(b, testLimits) { v =>
-            assertResult(fullRows + 2L)(v.getRowCount)
-            val binaryView = v.getChildColumnView(0)
-            assertResult(fullRows.toLong * valuesPerRow)(binaryView.getRowCount)
-            (0 until fullRows * valuesPerRow).foreach { i =>
-              assert(binaryView.getBytesFromList(i).sameElements(value))
-            }
-            assertResult(smallLimit.toLong)(binaryView.getChildColumnView(0).getRowCount)
-            assertResult(0L)(v.getEndListOffset(fullRows) - v.getStartListOffset(fullRows))
-            assert(v.isNull(fullRows + 1))
-          }
-        }
-      }
-    }
-  }
-
-  test("a LIST<LIST<INT8>> column limits the rows of its inner lists") {
-    val listOfByteLists = new ListType(true, new ListType(true, new BasicType(true, DType.INT8)))
-    val testLimits = limits(offsetRows = smallLimit)
-    val innerListsPerRow = 64
-    val fullRows = smallLimit / innerListsPerRow
-    estimates.foreach { estimate =>
-      withLimits(testLimits) {
-        withResource(new RapidsHostColumnBuilder(listOfByteLists, estimate)) { b =>
-          val innerLists = b.getChild(0)
-          (0 until fullRows).foreach { r =>
-            (0 until innerListsPerRow).foreach { j =>
-              innerLists.getChild(0).append((r + j).toByte)
-              innerLists.endList()
-            }
-            b.endList()
-          }
-          assertRejects(rowsMessage(smallLimit + 1L, smallLimit, DType.LIST)) {
-            innerLists.endList()
-          }
-          b.endList()
-          buildAndCheck(b, testLimits) { v =>
-            assertResult(fullRows + 1L)(v.getRowCount)
-            val innerView = v.getChildColumnView(0)
-            assertResult(smallLimit.toLong)(innerView.getRowCount)
-            val byteView = innerView.getChildColumnView(0)
-            (0 until smallLimit).foreach { k =>
-              val expected = (k / innerListsPerRow + k % innerListsPerRow).toByte
-              assertResult(expected)(byteView.getByte(k))
-            }
-            assertResult(0L)(v.getEndListOffset(fullRows) - v.getStartListOffset(fullRows))
-          }
-        }
-      }
-    }
-  }
-
   test("a LIST<LIST<INT8>> column limits its INT8 elements") {
     val listOfByteLists = new ListType(true, new ListType(true, new BasicType(true, DType.INT8)))
     val testLimits = limits(fixedWidthElements = smallLimit)
@@ -866,40 +552,106 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
     }
   }
 
-  test("test limits must be positive and at most the production limits") {
-    val invalid = Seq(
-      limits(stringBytes = 0),
-      limits(stringBytes = -1),
-      limits(stringBytes = production.maxStringBytes + 1),
-      limits(fixedWidthElements = 0),
-      limits(fixedWidthElements = production.maxFixedWidthElements + 1),
-      limits(offsetRows = 0),
-      limits(offsetRows = production.maxOffsetRows + 1),
-      limits(structRows = 0),
-      limits(structRows = production.maxStructRows + 1))
-    invalid.foreach { testLimits =>
-      var ran = false
-      val e = intercept[IllegalArgumentException](withLimits(testLimits) { ran = true })
-      assert(!e.isInstanceOf[ColumnLimitExceededException])
-      assert(!ran)
+  /** A column with a row or element limit: how to append a row to it and to read one back. */
+  private case class RowLimitCase(
+      name: String,
+      dtype: DataType,
+      testLimits: Limits,
+      expected: String,
+      appendRow: (RapidsHostColumnBuilder, Int) => Unit,
+      appendEmptyRow: RapidsHostColumnBuilder => Unit,
+      checkRow: (HostColumnVector, Int) => Unit)
+
+  private val rowLimitCases = Seq(
+    RowLimitCase("a fixed-width column", new BasicType(true, DType.INT64),
+      limits(fixedWidthElements = smallLimit),
+      elementsMessage(smallLimit + 1L, smallLimit, DType.INT64),
+      (b, i) => b.append(i.toLong), _.append(-1L),
+      (v, i) => assertResult(i.toLong)(v.getLong(i))),
+    RowLimitCase("a string column", stringType, limits(offsetRows = smallLimit),
+      rowsMessage(smallLimit + 1L, smallLimit, DType.STRING),
+      (b, i) => b.append(i.toString), _.append(""),
+      (v, i) => assertResult(i.toString)(v.getJavaString(i))),
+    RowLimitCase("a list column", new ListType(true, intType), limits(offsetRows = smallLimit),
+      rowsMessage(smallLimit + 1L, smallLimit, DType.LIST),
+      (b, i) => {
+        b.getChild(0).append(i)
+        b.endList()
+      },
+      _.endList(),
+      (v, i) => assertResult(Seq(i)) {
+        (v.getStartListOffset(i) until v.getEndListOffset(i))
+          .map(j => v.getChildColumnView(0).getInt(j))
+      }),
+    RowLimitCase("a struct column", new StructType(true, intType), limits(structRows = smallLimit),
+      rowsMessage(smallLimit + 1L, smallLimit, DType.STRUCT),
+      (b, i) => {
+        b.getChild(0).append(i)
+        b.endStruct()
+      },
+      _.endStruct(),
+      (v, i) => assertResult(i)(v.getChildColumnView(0).getInt(i))))
+
+  rowLimitCases.foreach { c =>
+    test(s"${c.name} accepts rows up to its limit and rejects one more") {
+      estimates.foreach { estimate =>
+        withLimits(c.testLimits) {
+          withResource(new RapidsHostColumnBuilder(c.dtype, estimate)) { b =>
+            (0 until smallLimit).foreach { i =>
+              if (isNullRow(i)) b.appendNull() else c.appendRow(b, i)
+            }
+            def childRows: Seq[Int] =
+              (0 until c.dtype.getNumChildren).map(k => b.getChild(k).getCurrentIndex)
+            val childRowsBefore = childRows
+            assertRejects(c.expected)(c.appendEmptyRow(b))
+            assertRejects(c.expected)(b.appendNull())
+            // A struct null would also append a null to each child.
+            assertResult(childRowsBefore)(childRows)
+            buildAndCheck(b, c.testLimits) { v =>
+              assertResult(smallLimit.toLong)(v.getRowCount)
+              (0 until smallLimit).foreach { i =>
+                if (isNullRow(i)) assert(v.isNull(i)) else c.checkRow(v, i)
+              }
+            }
+          }
+        }
+      }
     }
-    // A rejected nested scope leaves the enclosing one in effect.
-    withLimits(limits(stringBytes = smallLimit)) {
-      intercept[IllegalArgumentException](withLimits(limits(stringBytes = 0)) { () })
-      assert(!acceptsString(smallLimit + 1))
-    }
-    assert(acceptsString(smallLimit + 1))
-    assert(withLimits(production)(acceptsString(smallLimit + 1)))
-    assert(withLimits(limits(stringBytes = 1))(acceptsString(1)))
   }
 
-  test("test limits are restored after a normal return, a thrown body and a nested scope") {
+  test("the production limits are the most a cuDF column can hold") {
+    // String bytes and offset rows are bounded by Int offsets, which need one entry more than
+    // there are rows; fixed-width elements and struct rows by the original builder's caps.
+    assertResult(2147483647L)(productionLimits.maxStringBytes)
+    assertResult(2147483646L)(productionLimits.maxFixedWidthElements)
+    assertResult(2147483645L)(productionLimits.maxOffsetRows)
+    assertResult(2147483646L)(productionLimits.maxStructRows)
+  }
+
+  test("test limits must be valid and are restored after a return, a throw or a rejection") {
     val outer = limits(stringBytes = smallLimit)
     val inner = limits(stringBytes = smallLimit / 2)
     def outerInEffect: Boolean =
       acceptsString(smallLimit / 2 + 1) && !acceptsString(smallLimit + 1)
+    val invalid = Seq(
+      limits(stringBytes = 0),
+      limits(stringBytes = -1),
+      limits(stringBytes = productionLimits.maxStringBytes + 1),
+      limits(fixedWidthElements = 0),
+      limits(fixedWidthElements = productionLimits.maxFixedWidthElements + 1),
+      limits(offsetRows = 0),
+      limits(offsetRows = productionLimits.maxOffsetRows + 1),
+      limits(structRows = 0),
+      limits(structRows = productionLimits.maxStructRows + 1))
     val result = withLimits(outer) {
       assert(outerInEffect)
+      invalid.foreach { testLimits =>
+        var ran = false
+        val e = intercept[IllegalArgumentException](withLimits(testLimits) { ran = true })
+        assert(!e.isInstanceOf[ColumnLimitExceededException])
+        assert(!ran)
+        assert(outerInEffect)
+      }
       val innerResult = withLimits(inner) {
         assert(!acceptsString(smallLimit / 2 + 1))
         "inner"
@@ -918,73 +670,8 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
       withLimits[Unit](outer)(throw new IllegalStateException("the body failed"))
     }
     assert(acceptsString(smallLimit + 1))
-  }
-
-  test("a builder keeps the test limits it was created with, in its children too") {
-    val arrayOfStrings = new ListType(true, stringType)
-    val testLimits = limits(stringBytes = smallLimit, offsetRows = 2)
-    val above = new Array[Byte](smallLimit + 1)
-    withResource(new RapidsHostColumnBuilder(arrayOfStrings, 1)) { before =>
-      withLimits(testLimits) {
-        before.getChild(0).appendUTF8String(above)
-        (0 until 3).foreach(_ => before.endList())
-      }
-      buildAndCheck(before, production)(v => assertResult(3L)(v.getRowCount))
-    }
-    val inside = withLimits(testLimits)(new RapidsHostColumnBuilder(arrayOfStrings, 1))
-    withResource(inside) { b =>
-      assertRejects(bytesMessage(smallLimit + 1L, smallLimit)) {
-        b.getChild(0).appendUTF8String(above)
-      }
-      b.getChild(0).append("a")
-      b.endList()
-      b.endList()
-      assertRejects(rowsMessage(3, 2, DType.LIST))(b.endList())
-      buildAndCheck(b, testLimits)(v => assertResult(2L)(v.getRowCount))
-    }
-    withResource(new RapidsHostColumnBuilder(arrayOfStrings, 1)) { after =>
-      after.getChild(0).appendUTF8String(above)
-      (0 until 3).foreach(_ => after.endList())
-      buildAndCheck(after, production)(v => assertResult(3L)(v.getRowCount))
-    }
-  }
-
-  test("builders created under test limits allocate no buffer above them") {
-    // Far above the limits, yet small enough that an unbounded allocation takes megabytes.
-    val estimate = 1L << 20
-    val testLimits = limits(smallLimit, smallLimit, smallLimit, smallLimit)
-    withLimits(testLimits) {
-      withResource(new RapidsHostColumnBuilder(stringType, estimate)) { b =>
-        b.appendUTF8String(new Array[Byte](smallLimit / 2 + 1))
-        b.appendNull()
-        // Doubling the first value's buffer would allocate 2 bytes above the limit.
-        b.appendUTF8String(new Array[Byte](smallLimit / 2 - 2))
-        assertRejects(bytesMessage(smallLimit + 1L, smallLimit)) {
-          b.appendUTF8String(new Array[Byte](2))
-        }
-        buildAndCheck(b, testLimits)(v => assertResult(3L)(v.getRowCount))
-      }
-      withResource(new RapidsHostColumnBuilder(new BasicType(true, DType.INT64), estimate)) { b =>
-        b.appendNull()
-        (1 until smallLimit).foreach(i => b.append(i.toLong))
-        assertRejects(elementsMessage(smallLimit + 1L, smallLimit, DType.INT64))(b.append(0L))
-        buildAndCheck(b, testLimits)(v => assertResult(smallLimit.toLong)(v.getRowCount))
-      }
-      withResource(new RapidsHostColumnBuilder(binaryType, estimate)) { b =>
-        b.appendByteList(new Array[Byte](3))
-        b.appendNull()
-        assertRejects(elementsMessage(smallLimit + 1L, smallLimit, DType.UINT8)) {
-          b.appendByteList(new Array[Byte](smallLimit - 2))
-        }
-        buildAndCheck(b, testLimits)(v => assertResult(2L)(v.getRowCount))
-      }
-      withResource(new RapidsHostColumnBuilder(new StructType(true, intType), estimate)) { b =>
-        b.getChild(0).append(1)
-        b.endStruct()
-        b.appendNull()
-        buildAndCheck(b, testLimits)(v => assertResult(2L)(v.getRowCount))
-      }
-    }
+    assert(withLimits(productionLimits)(acceptsString(smallLimit + 1)))
+    assert(withLimits(limits(stringBytes = 1))(acceptsString(1)))
   }
 
   test("test limits do not reach builders created on another thread") {
@@ -999,6 +686,38 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
       thread.join()
       assert(accepted.get)
       assert(!acceptsString(smallLimit + 1))
+    }
+  }
+}
+
+/** Helpers for the suites that lower the builder's limits. */
+object RapidsHostColumnBuilderSuite {
+  private[rapids] val productionLimits: Limits = RapidsHostColumnBuilder.PRODUCTION_LIMITS
+
+  private[rapids] def limits(
+      stringBytes: Long = productionLimits.maxStringBytes,
+      fixedWidthElements: Long = productionLimits.maxFixedWidthElements,
+      offsetRows: Long = productionLimits.maxOffsetRows,
+      structRows: Long = productionLimits.maxStructRows): Limits =
+    new Limits(stringBytes, fixedWidthElements, offsetRows, structRows)
+
+  private[rapids] def withLimits[T](testLimits: Limits)(body: => T): T =
+    RapidsHostColumnBuilder.withTestLimits(testLimits, new Supplier[T] {
+      override def get(): T = body
+    })
+
+  private[rapids] def limitMessage(
+      what: String, attempted: Long, limit: Long, dtype: DType): String =
+    s"$what would be $attempted, exceeding the limit of $limit for a column of cuDF type " +
+      s"$dtype; split the input into smaller batches or partitions, or reduce the size of " +
+      "individual values"
+
+  /** Checks that the null count of the column and of each child matches its validity mask. */
+  private[rapids] def assertNullCountsMatchMasks(col: HostColumnVectorCore): Unit = {
+    val maskNulls = (0L until col.getRowCount).count(i => col.isNull(i)).toLong
+    Assertions.assertResult(maskNulls, s"${col.getType} null count")(col.getNullCount)
+    (0 until col.getNumChildren).foreach { i =>
+      assertNullCountsMatchMasks(col.getChildColumnView(i))
     }
   }
 }

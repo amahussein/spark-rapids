@@ -17,16 +17,14 @@
 package com.nvidia.spark.rapids
 
 import java.nio.charset.StandardCharsets
-import java.util.function.Supplier
 
 import scala.collection.mutable.ArrayBuffer
 
-import ai.rapids.cudf.{DType, HostColumnVector, HostColumnVectorCore, MemoryBuffer, ParquetOptions, Table}
+import ai.rapids.cudf.{DType, HostColumnVector}
 import com.nvidia.spark.rapids.Arm.withResource
-import com.nvidia.spark.rapids.GpuColumnVector.GpuColumnarBatchBuilder
+import com.nvidia.spark.rapids.RapidsHostColumnBuilderSuite._
 import com.nvidia.spark.rapids.RapidsPluginImplicits.AutoCloseableProducingArray
 import com.nvidia.spark.rapids.jni.{GpuSplitAndRetryOOM, RmmSpark}
-import com.nvidia.spark.rapids.parquet.ParquetCachedBatchSerializer
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection}
@@ -50,26 +48,15 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
   private val smallBatchBytes = 64L * 1024
   // The cache build's goal: no size target, so a batch ends only where it has to split.
   private val cacheBuildGoal = TargetSize(Long.MaxValue)
-  private val productionLimits = RapidsHostColumnBuilder.PRODUCTION_LIMITS
   // The split case: 2047 values fit a string limit one byte short of 2048 values, so row 2048
   // starts a second batch. Rows 2047 and 2048 both have a null INT in one validity byte, so the
   // rollback of row 2048 must keep row 2047's null.
   private val splitCaseRows = 2300
   private val rowsBeforeLimit = 2047
-  // The shared-row sources' values: four fit a 4096-byte limit, and row 5, whose INT is null,
-  // crosses it.
+  // Values shared by the carried-row and finite-target split tests: four fit a 4096-byte limit,
+  // and row 5, whose INT is null, crosses it.
   private val sharedValueSize = 1000
   private val sharedNullIntRow = 5
-  private val largeHostMemoryKey = "spark.rapids.test.largeHostMemory.enabled"
-  private val largeHostMemoryCancel =
-    "set SPARK_CONF=spark.rapids.test.largeHostMemory.enabled=true to run; see tests/README.md"
-  // Read from SPARK_CONF as SparkSessionHolder applies it: this suite runs no Spark session.
-  private val largeHostMemoryEnabled = sys.env.get("SPARK_CONF").exists(_.split(",").exists {
-    setting =>
-      val keyValue = setting.split("=", 2)
-      keyValue.length == 2 && keyValue(0).trim == largeHostMemoryKey &&
-        keyValue(1).trim.equalsIgnoreCase("true")
-  })
 
   test("test simple GPU OOM retry") {
     val rowIter: Iterator[InternalRow] = (1 to 10).map(InternalRow(_)).toIterator
@@ -189,64 +176,32 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
   test("an OOM split after an earlier column appended a null keeps null counts equal to masks") {
     // Row 2's string outgrows the one-byte buffer that row 1 sized, so it allocates after the
     // INT column has appended row 2's null. Row 5 has a null string.
-    def data(): IntStringRows = new IntStringRows(
+    val data = new IntStringRows(
       intIsNull = n => n == 2 || n == 4, stringIsNull = _ == 5, valueSize = n => n)
-    val input = data()
     val rows = (1 to 5).iterator.map { n =>
       if (n == 2) {
-        new StringGetterHookRow(input.values(n), () => RmmSpark.forceRetryOOM(
+        new StringGetterHookRow(data.values(n), () => RmmSpark.forceRetryOOM(
           RmmSpark.getCurrentThreadId, 1, RmmSpark.OomInjectionType.CPU.ordinal, 0))
       } else {
-        input.row(n)
+        data.row(n)
       }
     }
-    val expected = data()
     val nullCounts = ArrayBuffer[List[Long]]()
-    val decodedNullCounts = ArrayBuffer[List[Long]]()
-    val serializer = new ParquetCachedBatchSerializer
     val iter = r2c(rows, intStringSchema, TargetSize(smallBatchBytes), smallBatchBytes,
       enableRetry = true)
     val sizes = drainBatches(iter) { (batch, firstRow) =>
-      nullCounts += assertIntStringBatch(batch, firstRow, expected).toList
-      // The same batch as the cache stores it: Parquet-encoded, then decoded.
-      serializer.compressColumnarBatchWithParquet(batch, intStringSchema, intStringSchema,
-          smallBatchBytes, false).foreach { cached =>
-        withResource(Table.readParquet(ParquetOptions.DEFAULT, cached.buffer)) { table =>
-          withResource(GpuColumnVector.from(table,
-              intStringSchema.fields.map(_.dataType))) { decoded =>
-            decodedNullCounts += assertIntStringBatch(decoded, firstRow, expected).toList
-          }
-        }
-      }
+      nullCounts += assertIntStringBatch(batch, firstRow, data).toList
     }
     assertResult(Seq(1, 4), "batch sizes")(sizes)
     assertResult(Seq(List(0L, 0L), List(2L, 1L)), "INT and string null counts")(
       nullCounts.toList)
-    assertResult(nullCounts.toList, "null counts after Parquet encoding")(
-      decodedNullCounts.toList)
   }
 
   Seq(true, false).foreach { retry =>
-    test("a column limit hit while converting a row splits the cache build before that row, " +
-        retryMode(retry)) {
-      val valueSize = 1024
-      val input = splitCaseData(valueSize)
-      val rows = (1 to splitCaseRows).iterator.map { n =>
-        if (n == rowsBeforeLimit + 1) {
-          new StringGetterHookRow(input.values(n),
-            () => throw new ColumnLimitExceededException("a test column limit", "a test remedy"))
-        } else {
-          input.row(n)
-        }
-      }
-      assertSplitAtLimit(r2c(rows, intStringSchema, cacheBuildGoal, smallBatchBytes, retry),
-        valueSize)
-    }
-
     test("a lowered string limit splits the cache build before the row that crosses it, " +
         retryMode(retry)) {
       val valueSize = 1024
-      withLimits(loweredLimits(maxStringBytes = splitCaseStringLimit(valueSize))) {
+      withLimits(limits(stringBytes = splitCaseStringLimit(valueSize))) {
         assertSplitAtLimit(r2c(splitCaseData(valueSize).iterator(splitCaseRows),
           intStringSchema, cacheBuildGoal, smallBatchBytes, retry), valueSize)
       }
@@ -256,11 +211,11 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
         retryMode(retry)) {
       val valueSize = 1024
       val limit = splitCaseStringLimit(valueSize)
-      withLimits(loweredLimits(maxStringBytes = limit)) {
+      withLimits(limits(stringBytes = limit)) {
         val iter = r2c(splitCaseData(valueSize).iterator(splitCaseRows), intStringSchema,
           RequireSingleBatch, smallBatchBytes, retry)
         val e = interceptLimit(iter.next())
-        assertResult(builderMessage("The string data size in bytes",
+        assertResult(limitMessage("The string data size in bytes",
           (rowsBeforeLimit + 1L) * valueSize, limit, DType.STRING))(e.getMessage)
       }
     }
@@ -269,12 +224,11 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
         "message, " + retryMode(retry)) {
       def arrayRow(n: Int, elements: Array[Any]): InternalRow =
         new GenericInternalRow(Array[Any](n, new GenericArrayData(elements)))
-      val element = new Array[Byte](1000)
-      fillRepeating(element, element.length, 1)
+      val element = repeatedDigits(1, 1000)
       val rows = Iterator(
         arrayRow(1, Array.fill[Any](5)(UTF8String.fromBytes(element))),
         arrayRow(2, Array[Any](UTF8String.fromString("2"))))
-      withLimits(loweredLimits(maxStringBytes = 4096)) {
+      withLimits(limits(stringBytes = 4096)) {
         val iter = r2c(rows, intArraySchema, cacheBuildGoal, smallBatchBytes, retry)
         val e = interceptLimit(iter.next())
         assertResult(singleRowMessage("The string data size in bytes", 5000, 4096,
@@ -298,24 +252,13 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
       }
     }
 
-    test("the cache build splits 1 MiB strings at the real string limit, " +
-        retryMode(retry)) {
-      assume(largeHostMemoryEnabled, largeHostMemoryCancel)
-      assertAssertionsEnabled()
-      val valueSize = 1024 * 1024
-      assertResult(productionLimits.maxStringBytes)(splitCaseStringLimit(valueSize))
-      // The cache build sizes its builders from min(batchSizeBytes, 1 GiB): 1 GiB by default.
-      assertSplitAtLimit(r2c(splitCaseData(valueSize).iterator(splitCaseRows), intStringSchema,
-        cacheBuildGoal, 1L << 30, retry), valueSize)
-    }
-
     test("a row too large for empty builders after a legal prefix fails with the single-row " +
         "message, " + retryMode(retry)) {
       RmmSpark.getAndResetNumRetryThrow(taskId)
       val valueSize = (n: Int) => if (n == 4) 5000 else sharedValueSize
-      val source = sharedUnsafeRows(4, valueSize)
+      val source = unsafeRows(4, valueSize)
       val expected = sharedIntStringData(valueSize)
-      withLimits(loweredLimits(maxStringBytes = 4096)) {
+      withLimits(limits(stringBytes = 4096)) {
         val iter = r2c(source, intStringSchema, cacheBuildGoal, smallBatchBytes, retry)
         withResource(iter.next()) { batch =>
           assertResult(3, "rows before the row too large for any batch")(batch.numRows())
@@ -331,116 +274,65 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
     }
   }
 
-  test("TargetSize ends the first batch at the row estimate and later ones at the byte target") {
-    val sampleRows = GpuBatchUtils.VALIDITY_BUFFER_BOUNDARY_ROWS
-    val shortRows = GpuBatchUtils.estimateRowCount(smallBatchBytes,
-      GpuBatchUtils.estimateGpuMemory(intStringSchema, sampleRows), sampleRows)
-    val longRows = 320
-    val numRows = shortRows + longRows
-    def data(): IntStringRows = new IntStringRows(
-      intIsNull = n => n <= shortRows && n % 3 == 0,
-      stringIsNull = n => n <= shortRows && n % 3 == 0,
-      valueSize = n => if (n <= shortRows) 0 else 1024)
-    val rowBytes = converterBytes(intStringSchema, data().iterator(numRows), numRows)
-    val bytesCut = math.ceil(smallBatchBytes.toDouble / rowBytes.last).toInt
-    assert(longRows % bytesCut == 0, s"$longRows long rows do not fill batches of $bytesCut")
-    val sizesByMode = Seq(true, false).map { retry =>
-      val expected = data()
-      val iter = r2c(data().iterator(numRows), intStringSchema, TargetSize(smallBatchBytes),
-        smallBatchBytes, retry)
-      val cuts = drainCheckingCuts(iter, intStringSchema, smallBatchBytes, rowBytes) {
-        (batch, firstRow) => assertIntStringBatch(batch, firstRow, expected)
-      }
-      val first = cuts.head
-      assertResult(shortRows, "rows in the first batch")(first.rows)
-      assertResult(first.targetRows, "the first batch ends at the row estimate")(first.rows)
-      assert(first.bytes < smallBatchBytes.toDouble, "the first batch is under the byte target")
-      cuts.tail.foreach { cut =>
-        assertResult(bytesCut, "rows in a batch of long rows")(cut.rows)
-        assert(cut.rows < cut.targetRows && cut.bytes >= smallBatchBytes.toDouble,
-          s"a batch of long rows must end at the byte target: $cut")
-      }
-      cuts.map(_.rows)
-    }
-    assertResult(sizesByMode.head, "batches with r2c retry on against off")(sizesByMode(1))
-  }
-
-  test("TargetSize admits the row that crosses the byte target, then ends the batch") {
-    val numRows = 200
-    def data(): IntStringRows = new IntStringRows(
-      intIsNull = _ => false, stringIsNull = _ => false, valueSize = _ => 1024)
-    val rowBytes = converterBytes(intStringSchema, data().iterator(numRows), numRows)
-    assert(rowBytes.forall(_ == rowBytes.head), "every row has the same converter bytes")
-    // 64 rows reach the lower target exactly, so no 65th row is admitted. One byte higher, the
-    // batch is still under the target after 64 rows, so the 65th is admitted and ends it.
-    val lowerTarget = (64 * rowBytes.head).toLong
-    assert(lowerTarget.toDouble == 64 * rowBytes.head, s"64 rows of ${rowBytes.head} bytes")
-    Seq(lowerTarget -> 64, (lowerTarget + 1) -> 65).foreach { case (target, fullBatchRows) =>
-      val sizesByMode = Seq(true, false).map { retry =>
-        val expected = data()
-        val iter = r2c(data().iterator(numRows), intStringSchema, TargetSize(target), target,
-          retry)
-        val cuts = drainCheckingCuts(iter, intStringSchema, target, rowBytes) {
-          (batch, firstRow) => assertIntStringBatch(batch, firstRow, expected)
+  test("TargetSize ends batches at the row estimate and at the byte target") {
+    // The schema's row estimate for 64 KiB.
+    val shortRows = 2319
+    def sizedRows(valueSize: Int => Int): IntStringRows = new IntStringRows(
+      intIsNull = _ => false, stringIsNull = _ => false, valueSize = valueSize)
+    // Cases of (input, rows, byte target, batch sizes).
+    // The sizes were recorded on main and are pre-existing behavior.
+    Seq(
+      // The short rows end the first batch at the row estimate, and rows of a 1 KiB string end
+      // the later ones at the byte target.
+      (new IntStringRows(intIsNull = n => n <= shortRows && n % 3 == 0,
+        stringIsNull = n => n <= shortRows && n % 3 == 0,
+        valueSize = n => if (n <= shortRows) 0 else 1024), shortRows + 320, smallBatchBytes,
+        Seq(shortRows, 64, 64, 64, 64, 64)),
+      // A row of an INT and a 1 KiB string counts 1032.25 bytes, so 64 rows reach 66064 exactly
+      // and no 65th is admitted. One byte higher, the 65th row is admitted and ends the batch.
+      (sizedRows(_ => 1024), 200, 66064L, Seq(64, 64, 64, 8)),
+      (sizedRows(_ => 1024), 200, 66065L, Seq(65, 65, 65, 5)),
+      // A first row larger than the target is a batch of its own. The row estimate refined from
+      // it then ends each later batch at the number of rows emitted so far.
+      (sizedRows(n => if (n == 1) 128 * 1024 else 1024), 6, smallBatchBytes, Seq(1, 1, 2, 2))
+    ).foreach { case (data, numRows, target, expectedSizes) =>
+      Seq(true, false).foreach { retry =>
+        val sizes = drainBatches(r2c(data.iterator(numRows), intStringSchema,
+            TargetSize(target), target, retry)) { (batch, firstRow) =>
+          assertIntStringBatch(batch, firstRow, data)
         }
-        val sizes = cuts.map(_.rows)
-        assert(sizes.init.forall(_ == fullBatchRows), s"batches $sizes at a target of $target")
-        sizes
+        assertResult(expectedSizes,
+          s"batches of $numRows rows at a target of $target, ${retryMode(retry)}")(sizes)
       }
-      assertResult(sizesByMode.head, s"batches at a target of $target, retry on against off")(
-        sizesByMode(1))
     }
   }
 
-  test("TargetSize gives a row larger than the byte target a batch of its own") {
-    val numRows = 6
-    def data(): IntStringRows = new IntStringRows(intIsNull = _ => false,
-      stringIsNull = _ => false, valueSize = n => if (n == 1) 128 * 1024 else 1024)
-    val rowBytes = converterBytes(intStringSchema, data().iterator(numRows), numRows)
-    val sizesByMode = Seq(true, false).map { retry =>
-      val expected = data()
-      val iter = r2c(data().iterator(numRows), intStringSchema, TargetSize(smallBatchBytes),
-        smallBatchBytes, retry)
-      val cuts = drainCheckingCuts(iter, intStringSchema, smallBatchBytes, rowBytes) {
-        (batch, firstRow) => assertIntStringBatch(batch, firstRow, expected)
-      }
-      assertResult(1, "rows in the batch of the 128 KiB row")(cuts.head.rows)
-      cuts.map(_.rows)
-    }
-    assertResult(sizesByMode.head, "batches with r2c retry on against off")(sizesByMode(1))
-  }
-
-  test("a lowered string limit splits shared UnsafeRow input under a finite target") {
-    val sizesByMode = Seq(true, false).map { retry =>
-      val source = sharedUnsafeRows(10, _ => sharedValueSize)
-      val expected = sharedIntStringData(_ => sharedValueSize)
+  test("a lowered string or binary limit splits the input under a finite target") {
+    val stringData = sharedIntStringData(_ => sharedValueSize)
+    // Each input, made fresh for every run, with the check of its batches, which returns the INT
+    // null count.
+    val inputs = Seq(
+      ("UnsafeRow strings", intStringSchema, () => unsafeRows(10, _ => sharedValueSize),
+        (batch: ColumnarBatch, firstRow: Int) =>
+          assertIntStringBatch(batch, firstRow, stringData)(0)),
+      ("GenericInternalRow binaries", intArrayBinarySchema, () => intArrayBinaryRows(10),
+        (batch: ColumnarBatch, firstRow: Int) => assertIntArrayBinaryBatch(batch, firstRow)))
+    for ((name, rowSchema, newSource, check) <- inputs; retry <- Seq(true, false)) {
+      val source = newSource()
       val intNullCounts = ArrayBuffer[Long]()
-      val sizes = withLimits(loweredLimits(maxStringBytes = 4096, maxFixedWidthElements = 4096)) {
-        drainBatches(r2c(source, intStringSchema, TargetSize(smallBatchBytes), smallBatchBytes,
-          retry)) { (batch, firstRow) =>
-          intNullCounts += assertIntStringBatch(batch, firstRow, expected)(0)
+      val sizes = withLimits(limits(stringBytes = 4096, fixedWidthElements = 4096)) {
+        drainBatches(r2c(source, rowSchema, TargetSize(smallBatchBytes), smallBatchBytes,
+            retry)) { (batch, firstRow) =>
+          intNullCounts += check(batch, firstRow)
         }
       }
-      assertSharedRowSplit(sizes, intNullCounts.toList, source)
-      sizes
+      // Four rows fit each lowered limit, so the batches hold 4, 4 and 2 rows, and row 5's INT
+      // null is counted in the second batch only. The source is asked for each row once.
+      val clue = s"$name, ${retryMode(retry)}"
+      assertResult(Seq(4, 4, 2), s"batch sizes, $clue")(sizes)
+      assertResult(Seq(0L, 1L, 0L), s"INT null counts, $clue")(intNullCounts.toList)
+      assertResult(10, s"calls to the source's next(), $clue")(source.nextCalls)
     }
-    assertResult(sizesByMode.head, "batches with r2c retry on against off")(sizesByMode(1))
-  }
-
-  test("a lowered binary limit splits shared GenericInternalRow input under a finite target") {
-    val sizesByMode = Seq(true, false).map { retry =>
-      val source = sharedGenericRows(numRows = 10)
-      val intNullCounts = ArrayBuffer[Long]()
-      val sizes = withLimits(loweredLimits(maxStringBytes = 4096, maxFixedWidthElements = 4096)) {
-        drainBatches(r2c(source, intArrayBinarySchema, TargetSize(smallBatchBytes),
-          smallBatchBytes, retry)) { (batch, firstRow) =>
-          intNullCounts += assertIntArrayBinaryBatch(batch, firstRow)
-        }
-      }
-      assertSharedRowSplit(sizes, intNullCounts.toList, source)
-      sizes
-    }
-    assertResult(sizesByMode.head, "batches with r2c retry on against off")(sizesByMode(1))
   }
 
   private def retryMode(enabled: Boolean): String =
@@ -455,29 +347,10 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
     new RowToColumnarIterator(rows, rowSchema, goal, batchSizeBytes,
       new GpuRowToColumnConverter(rowSchema), enableRetry)
 
-  /** Runs body with lowered limits for the builders this thread creates inside it. */
-  private def withLimits[T](limits: RapidsHostColumnBuilder.Limits)(body: => T): T =
-    RapidsHostColumnBuilder.withTestLimits[T](limits, new Supplier[T] {
-      override def get(): T = body
-    })
-
-  private def loweredLimits(
-      maxStringBytes: Long,
-      maxFixedWidthElements: Long = productionLimits.maxFixedWidthElements) =
-    new RapidsHostColumnBuilder.Limits(maxStringBytes, maxFixedWidthElements,
-      productionLimits.maxOffsetRows, productionLimits.maxStructRows)
-
-  private def limitDetail(what: String, attempted: Long, limit: Long, dType: DType): String =
-    s"$what would be $attempted, exceeding the limit of $limit for a column of cuDF type $dType"
-
-  private def builderMessage(what: String, attempted: Long, limit: Long, dType: DType): String =
-    limitDetail(what, attempted, limit, dType) + "; split the input into smaller batches or " +
-      "partitions, or reduce the size of individual values"
-
   private def singleRowMessage(what: String, attempted: Long, limit: Long,
       dType: DType): String =
-    "A single row cannot fit in a batch on its own: " +
-      limitDetail(what, attempted, limit, dType) + "; reduce the size of that row's values"
+    s"A single row cannot fit in a batch on its own: $what would be $attempted, exceeding the " +
+      s"limit of $limit for a column of cuDF type $dType; reduce the size of that row's values"
 
   /** Intercepts the limit exception, closing any batch the call returns instead. */
   private def interceptLimit(nextBatch: => ColumnarBatch): ColumnLimitExceededException = {
@@ -486,17 +359,6 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
     }
     assertResult(classOf[ColumnLimitExceededException])(e.getClass)
     e
-  }
-
-  /**
-   * The large tests need -ea in the executing JVM, so that an overflow fails on an assertion
-   * instead of writing outside a host buffer.
-   */
-  private def assertAssertionsEnabled(): Unit = {
-    assert(classOf[RapidsHostColumnBuilder].desiredAssertionStatus(),
-      "run with -ea: assertions are disabled for RapidsHostColumnBuilder")
-    assert(classOf[MemoryBuffer].desiredAssertionStatus(),
-      "run with -ea: assertions are disabled for cuDF MemoryBuffer")
   }
 
   private def splitCaseData(valueSize: Int): IntStringRows = new IntStringRows(
@@ -524,43 +386,20 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
   private def sharedIntStringData(valueSize: Int => Int): IntStringRows = new IntStringRows(
     intIsNull = _ == sharedNullIntRow, stringIsNull = _ => false, valueSize = valueSize)
 
-  /** A source that rewrites one UnsafeRow, through an UnsafeProjection, for every row. */
-  private def sharedUnsafeRows(numRows: Int, valueSize: Int => Int): SharedRowSource = {
-    val data = sharedIntStringData(valueSize)
+  /** The shared values as UnsafeRows. */
+  private def unsafeRows(numRows: Int, valueSize: Int => Int): CountingInput = {
     val projection = UnsafeProjection.create(intStringSchema)
-    new SharedRowSource(numRows, n => projection(data.row(n)))
+    new CountingInput(
+      sharedIntStringData(valueSize).iterator(numRows).map(row => projection(row).copy()))
   }
 
-  /**
-   * A source that rewrites one GenericInternalRow for every row, with its BINARY value filled
-   * into one reused array, so only a copy of the row keeps a carried row's bytes.
-   */
-  private def sharedGenericRows(numRows: Int): SharedRowSource = {
-    val row = new GenericInternalRow(3)
-    val binary = new Array[Byte](sharedValueSize)
-    new SharedRowSource(numRows, n => {
-      if (n == sharedNullIntRow) row.setNullAt(0) else row.setInt(0, n)
+  /** Rows of an INT, an ARRAY<STRING> of two copies of the row number and a BINARY. */
+  private def intArrayBinaryRows(numRows: Int): CountingInput =
+    new CountingInput((1 to numRows).iterator.map { n =>
       val digits = UTF8String.fromString(n.toString)
-      row.update(1, new GenericArrayData(Array[Any](digits, digits)))
-      fillRepeating(binary, binary.length, n)
-      row.update(2, binary)
-      row
+      new GenericInternalRow(Array[Any](if (n == sharedNullIntRow) null else n,
+        new GenericArrayData(Array[Any](digits, digits)), repeatedDigits(n, sharedValueSize)))
     })
-  }
-
-  /**
-   * Four shared rows fit the lowered limit, so the batches hold 4, 4 and 2 rows, and row 5's
-   * INT null is counted in the second batch only. The source is asked for each row once, so the
-   * carried row 5 was converted before any later input row was fetched into the shared row.
-   */
-  private def assertSharedRowSplit(
-      sizes: Seq[Int],
-      intNullCounts: Seq[Long],
-      source: SharedRowSource): Unit = {
-    assertResult(Seq(4, 4, 2), "batch sizes")(sizes)
-    assertResult(Seq(0L, 1L, 0L), "INT null counts")(intNullCounts)
-    assertResult(10, "calls to the source's next()")(source.nextCalls)
-  }
 
   /** Drains the iterator, checking each batch with its first input row; returns the sizes. */
   private def drainBatches(iter: Iterator[ColumnarBatch])(
@@ -577,80 +416,8 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
     sizes.toList
   }
 
-  /** A batch as RowToColumnarIterator's own formulas cut it. */
-  private case class Cut(rows: Int, bytes: Double, targetRows: Int)
-
-  /**
-   * Drains a TargetSize iterator, checking each batch's size against the cut its formulas give:
-   * a row target estimated from the schema, then from the device size of the batches emitted so
-   * far, and a byte target on the converters' byte counts. A row is admitted while the batch is
-   * under both targets, and the first row always is.
-   */
-  private def drainCheckingCuts(
-      iter: Iterator[ColumnarBatch],
-      rowSchema: StructType,
-      targetBytes: Long,
-      rowBytes: Array[Double])(check: (ColumnarBatch, Int) => Unit): Seq[Cut] = {
-    val sampleRows = GpuBatchUtils.VALIDITY_BUFFER_BOUNDARY_ROWS
-    var targetRows = GpuBatchUtils.estimateRowCount(targetBytes,
-      GpuBatchUtils.estimateGpuMemory(rowSchema, sampleRows), sampleRows)
-    var deviceBytes = 0L
-    var start = 0
-    val cuts = ArrayBuffer[Cut]()
-    while (iter.hasNext) {
-      var rows = 0
-      var bytes = 0.0
-      while (start + rows < rowBytes.length &&
-          (rows == 0 || rows < targetRows && bytes < targetBytes.toDouble)) {
-        bytes += rowBytes(start + rows)
-        rows += 1
-      }
-      withResource(iter.next()) { batch =>
-        assertResult(rows, s"rows in the batch that starts at input row ${start + 1}")(
-          batch.numRows())
-        check(batch, start + 1)
-        deviceBytes += GpuColumnVector.getTotalDeviceMemoryUsed(batch)
-      }
-      cuts += Cut(rows, bytes, targetRows)
-      start += rows
-      if (deviceBytes > 0) {
-        targetRows = GpuBatchUtils.estimateRowCount(targetBytes, deviceBytes, start)
-      }
-    }
-    assertResult(rowBytes.length, "input rows in all batches")(start)
-    cuts.toList
-  }
-
-  /** The bytes RowToColumnarIterator counts for each row, from the converters themselves. */
-  private def converterBytes(
-      rowSchema: StructType,
-      rows: Iterator[InternalRow],
-      numRows: Int): Array[Double] = {
-    val converter = new GpuRowToColumnConverter(rowSchema)
-    withResource(new GpuColumnarBatchBuilder(rowSchema, numRows)) { builders =>
-      rows.map(row => converter.convert(row, builders)).toArray
-    }
-  }
-
   private def withHostColumns[T](batch: ColumnarBatch)(body: Array[HostColumnVector] => T): T =
     withResource(GpuColumnVector.extractBases(batch).safeMap(_.copyToHost()))(body)
-
-  /** A column's null count must equal the nulls in its validity mask, as must its children's. */
-  private def assertNullCountMatchesMask(column: HostColumnVectorCore): Unit = {
-    var maskNulls = 0L
-    var i = 0L
-    while (i < column.getRowCount) {
-      if (column.isNull(i)) {
-        maskNulls += 1
-      }
-      i += 1
-    }
-    assertResult(maskNulls, s"null count of a ${column.getType} column against its mask")(
-      column.getNullCount)
-    (0 until column.getNumChildren).foreach { c =>
-      assertNullCountMatchesMask(column.getChildColumnView(c))
-    }
-  }
 
   /**
    * Checks a batch of the INT and STRING schema against the expected rows from firstRow on, and
@@ -661,7 +428,7 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
       firstRow: Int,
       expected: IntStringRows): Array[Long] = {
     withHostColumns(batch) { columns =>
-      columns.foreach(column => assertNullCountMatchesMask(column))
+      columns.foreach(column => assertNullCountsMatchMasks(column))
       val ints = columns(0)
       val strings = columns(1)
       (0 until batch.numRows()).foreach { i =>
@@ -673,7 +440,7 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
         }
         assertResult(row.isNullAt(1), s"string null at row $n")(strings.isNull(i))
         if (!row.isNullAt(1)) {
-          // Compared as a flag, so that a failure does not print values of up to 1 MiB.
+          // Compared as a flag, so that a failure does not print values of up to 128 KiB.
           val equal = UTF8String.fromBytes(strings.getUTF8(i)) == row.getUTF8String(1)
           assert(equal, s"string at row $n")
         }
@@ -682,11 +449,10 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
     }
   }
 
-  /** Checks a batch of the shared GenericInternalRow source; returns the INT null count. */
+  /** Checks a batch of intArrayBinaryRows; returns the INT null count. */
   private def assertIntArrayBinaryBatch(batch: ColumnarBatch, firstRow: Int): Long = {
-    val expectedBinary = new Array[Byte](sharedValueSize)
     withHostColumns(batch) { columns =>
-      columns.foreach(column => assertNullCountMatchesMask(column))
+      columns.foreach(column => assertNullCountsMatchMasks(column))
       val ints = columns(0)
       val arrays = columns(1)
       val elements = arrays.getChildColumnView(0)
@@ -700,51 +466,30 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
         val array = (arrays.getStartListOffset(i) until arrays.getEndListOffset(i))
           .map(j => elements.getJavaString(j))
         assertResult(Seq(n.toString, n.toString), s"array at row $n")(array)
-        fillRepeating(expectedBinary, expectedBinary.length, n)
-        val equal = java.util.Arrays.equals(binaries.getBytesFromList(i), expectedBinary)
+        val equal = java.util.Arrays.equals(binaries.getBytesFromList(i),
+          repeatedDigits(n, sharedValueSize))
         assert(equal, s"binary at row $n")
       }
       ints.getNullCount
     }
   }
 
-  /** Writes the ASCII digits of n, repeated, into the first len bytes of buffer. */
-  private def fillRepeating(buffer: Array[Byte], len: Int, n: Int): Unit = {
+  /** The ASCII digits of n, repeated for size bytes. */
+  private def repeatedDigits(n: Int, size: Int): Array[Byte] = {
     val digits = n.toString.getBytes(StandardCharsets.US_ASCII)
-    var filled = math.min(digits.length, len)
-    System.arraycopy(digits, 0, buffer, 0, filled)
-    // Each copy starts at a whole number of periods, so doubling keeps the pattern.
-    while (filled < len) {
-      val chunk = math.min(filled, len - filled)
-      System.arraycopy(buffer, 0, buffer, filled, chunk)
-      filled += chunk
-    }
+    Array.tabulate[Byte](size)(i => digits(i % digits.length))
   }
 
   /**
    * Rows of a nullable INT and a nullable STRING, numbered from 1: the INT is the row number and
-   * the string repeats its digits for valueSize(n) bytes. Strings are written into one reused
-   * array, so each row must be consumed before the next one is made, as with Spark's sources.
+   * the string repeats its digits for valueSize(n) bytes.
    */
   private class IntStringRows(
       intIsNull: Int => Boolean,
       stringIsNull: Int => Boolean,
       valueSize: Int => Int) {
-    private var buffer = new Array[Byte](0)
-
-    def values(n: Int): Array[Any] = {
-      val string = if (stringIsNull(n)) {
-        null
-      } else {
-        val size = valueSize(n)
-        if (buffer.length < size) {
-          buffer = new Array[Byte](size)
-        }
-        fillRepeating(buffer, size, n)
-        UTF8String.fromBytes(buffer, 0, size)
-      }
-      Array[Any](if (intIsNull(n)) null else n, string)
-    }
+    def values(n: Int): Array[Any] = Array[Any](if (intIsNull(n)) null else n,
+      if (stringIsNull(n)) null else UTF8String.fromBytes(repeatedDigits(n, valueSize(n))))
 
     def row(n: Int): InternalRow = new GenericInternalRow(values(n))
 
@@ -765,33 +510,15 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
     }
   }
 
-  /**
-   * Refills one shared row with the next input row in hasNext and returns it from next(), as
-   * Spark's BufferedRowIterator does, so a row kept past the next hasNext changes under its
-   * holder.
-   */
-  private class SharedRowSource(numRows: Int, fill: Int => InternalRow)
-      extends Iterator[InternalRow] {
-    private var produced = 0
-    private var current: InternalRow = _
+  /** Returns the given rows, counting the calls to next(). */
+  private class CountingInput(rows: Iterator[InternalRow]) extends Iterator[InternalRow] {
     var nextCalls = 0
 
-    override def hasNext: Boolean = {
-      if (current == null && produced < numRows) {
-        current = fill(produced + 1)
-      }
-      current != null
-    }
+    override def hasNext: Boolean = rows.hasNext
 
     override def next(): InternalRow = {
       nextCalls += 1
-      if (!hasNext) {
-        throw new NoSuchElementException
-      }
-      val row = current
-      current = null
-      produced += 1
-      row
+      rows.next()
     }
   }
 

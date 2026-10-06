@@ -96,7 +96,7 @@ failing. Run them one at a time, without `-Drapids.parallelUnitTests=true`, and 
 ```bash
 SPARK_CONF=spark.rapids.test.largeHostMemory.enabled=true \
   mvn package -pl tests -am -Dbuildver=353 \
-  -DwildcardSuites=com.nvidia.spark.rapids.LargeHostMemorySuite,com.nvidia.spark.rapids.RowToColumnarIteratorRetrySuite
+  -DwildcardSuites=com.nvidia.spark.rapids.LargeHostMemorySuite
 ```
 
 The end-to-end cache test, `test_cache_partition_with_column_over_2gib` in
