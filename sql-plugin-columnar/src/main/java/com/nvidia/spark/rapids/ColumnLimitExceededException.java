@@ -17,10 +17,12 @@
 package com.nvidia.spark.rapids;
 
 /**
- * Thrown by {@link RapidsHostColumnBuilder} when one more value would take a column past the
- * size its cuDF representation can hold, before anything is written to that column. Callers
- * that can end the batch early, such as {@code RowToColumnarIterator}, catch it to split;
- * every other caller sees an {@code IllegalArgumentException} with the limit in its message.
+ * Thrown by {@link RapidsHostColumnBuilder} when an append would take a column past the size
+ * its cuDF representation can hold, before that append writes anything. Earlier appends of the
+ * same row, to other columns or to other parts of a nested value, stay until the caller restores
+ * a snapshot. Callers that can end the batch early, such as {@code RowToColumnarIterator}, catch
+ * it to split; every other caller sees an {@code IllegalArgumentException} with the limit in its
+ * message.
  */
 public class ColumnLimitExceededException extends IllegalArgumentException {
   private final String limitDetail;

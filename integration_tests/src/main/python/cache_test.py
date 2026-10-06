@@ -667,8 +667,8 @@ def test_cache_partition_with_column_over_2gib(data_type, route):
         pytest.skip('needs Spark local mode, where the driver is the JVM that builds the cache')
     if os.environ.get('PYTEST_XDIST_WORKER') is not None:
         pytest.skip('needs a single pytest worker (TEST_PARALLEL=1); see tests/README.md')
-    # The cached plan's root names the route: an RDD scan on the CPU, or an all-GPU aggregate
-    # whose shuffle makes AQE wrap the plan.
+    # The cached plan's root names the route: an RDD scan on the CPU, or an aggregate whose
+    # shuffle makes AQE wrap the plan. Only the root is checked, not where the aggregate runs.
     build_df, root = {
         'rdd': (_over_2gib_from_rdd, 'Scan ExistingRDD'),
         'aqe_gpu': (_over_2gib_from_gpu_aggregate, 'AdaptiveSparkPlan')}[route]
