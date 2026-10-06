@@ -21,9 +21,10 @@ from conftest import is_not_utc
 from data_gen import *
 from pyspark import StorageLevel
 import pyspark.sql.functions as f
-from spark_session import with_cpu_session, with_gpu_session
+from spark_session import with_cpu_session, with_gpu_session, is_spark_35x, is_spark_local_mode
 from join_test import create_df
-from marks import incompat, allow_non_gpu, ignore_order, disable_ansi_mode, inject_oom
+from marks import (incompat, allow_non_gpu, ignore_order, disable_ansi_mode, inject_oom,
+    large_data_test)
 import pyspark.mllib.linalg as mllib
 import pyspark.ml.linalg as ml
 
@@ -532,3 +533,216 @@ def test_cache_binary_on_gpu(enable_vectorized_conf):
          'spark.sql.adaptive.enabled': 'false'})
     assert_cpu_and_gpu_are_equal_collect_with_capture(
         func, exist_classes='GpuInMemoryTableScanExec', conf=dyn_conf)
+
+
+_requires_pcbs_lane = pytest.mark.skipif(not _pcbs_enabled,
+    reason="requires PCBS lane: "
+           "PYSP_TEST_spark_sql_cache_serializer=com.nvidia.spark.ParquetCachedBatchSerializer")
+
+# Keeps the cached scan on the GPU across shims, as in the tests above.
+_pcbs_gpu_scan_conf = {'spark.rapids.sql.exec.InMemoryTableScanExec': 'true',
+                       'spark.sql.adaptive.enabled': 'false'}
+
+
+def _cached_relation(spark, df):
+    """Return the InMemoryRelation caching df. The serializer is handed rows, not columnar
+    batches, unless the relation's cachedPlan supports columnar output."""
+    cached = spark._jsparkSession.sharedState().cacheManager().lookupCachedData(df._jdf)
+    assert cached.isDefined(), 'the DataFrame is not cached'
+    return cached.get().cachedRepresentation()
+
+
+def _assert_read_on_gpu_scan(spark, df):
+    spark._jvm.org.apache.spark.sql.rapids.ExecutionPlanCaptureCallback.assertContains(
+        df._jdf, 'GpuInMemoryTableScanExec')
+
+
+def _padded_value(i, value_bytes):
+    """Row i's value: its id zero-padded to 10 characters, then 'x' up to value_bytes."""
+    head = '%010d' % i
+    return head + 'x' * (value_bytes - len(head))
+
+
+def _padded_value_col(value_bytes):
+    """_padded_value as an expression over the id column."""
+    return f.rpad(f.lpad(f.col('id').cast('string'), 10, '0'), value_bytes, 'x')
+
+
+def _assert_padded_rows(rows, num_rows, value_bytes):
+    rows = sorted(rows)
+    assert [r[0] for r in rows] == list(range(num_rows))
+    wrong = [r[0] for r in rows if r[1] != _padded_value(r[0], value_bytes)]
+    assert wrong == [], 'rows holding a wrong value: {}'.format(wrong)
+
+
+@_requires_pcbs_lane
+@allow_non_gpu(any=True)
+@pytest.mark.parametrize('entry', ['rows', 'columnar'])
+def test_cache_rows_larger_than_slice_budget(entry):
+    # At batchSizeBytes=1m each slice of a cached batch has room for less than one row.
+    num_rows = 3
+    value_bytes = 2 * 1024 * 1024
+    expected = [(i, _padded_value(i, value_bytes)) for i in range(num_rows)]
+
+    def check(spark):
+        if entry == 'rows':
+            schema = StructType([StructField('id', LongType(), False),
+                                 StructField('c', StringType(), False)])
+            df = spark.createDataFrame(spark.sparkContext.parallelize(expected, 1), schema)
+        else:
+            df = spark.range(0, num_rows, 1, 1).withColumn('c', _padded_value_col(value_bytes))
+        df = df.cache()
+        relation = _cached_relation(spark, df)
+        assert relation.cachedPlan().supportsColumnar() == (entry == 'columnar')
+        assert df.count() == num_rows
+        builder = relation.cacheBuilder()
+        # Slices are never empty, so as many cached batches as rows means one row each.
+        assert builder.cachedColumnBuffers().count() == num_rows
+        assert builder.rowCountStats().value() == num_rows
+        # A CPU session would cache through the serializer's CPU writer, which cannot take a
+        # row larger than its budget, so the reads are checked against the input instead.
+        read = df.select('id', 'c')
+        _assert_padded_rows(read.collect(), num_rows, value_bytes)
+        _assert_read_on_gpu_scan(spark, read)
+        spark.conf.set('spark.rapids.sql.enabled', 'false')
+        _assert_padded_rows(df.select('id', 'c').collect(), num_rows, value_bytes)
+
+    with_gpu_session(check, conf=copy_and_update(_pcbs_gpu_scan_conf,
+                                                 {'spark.rapids.sql.batchSizeBytes': '1m'}))
+
+
+@_requires_pcbs_lane
+@allow_non_gpu(any=True)
+@pytest.mark.parametrize('num_rows', [0, 500, 1024, 1025, 5000], ids=idfn)
+def test_cache_zero_columns_from_rows(num_rows):
+    def check(spark):
+        # Built from an RDD, so the cached plan's root runs on the CPU and every shim hands
+        # the serializer rows.
+        df = spark.createDataFrame(spark.sparkContext.parallelize([()] * num_rows, 1),
+                                   StructType([])).cache()
+        relation = _cached_relation(spark, df)
+        assert not relation.cachedPlan().supportsColumnar()
+        assert df.count() == num_rows
+        builder = relation.cacheBuilder()
+        assert builder.rowCountStats().value() == num_rows
+        assert builder.sizeInBytesStats().value() == 0
+        spark.conf.set('spark.rapids.sql.enabled', 'false')
+        assert df.count() == num_rows
+
+    with_gpu_session(check, conf=_pcbs_gpu_scan_conf)
+
+
+# One partition of 2300 values of 1 MiB: 2411724800 bytes, more than a cuDF column can hold.
+_over_2gib_rows = 2300
+_over_2gib_value_bytes = 1024 * 1024
+# The default serializer's results for this data, recorded in a separate process because the
+# cache serializer is a static conf: count(); over both columns sum(length(c)),
+# sum(xxhash64(c)), sum(id) and the number of values not starting with their own id; then the
+# same sums over each column alone.
+_over_2gib_expected = [2300,
+                       (2411724800, 6297173105888965833, 2643850, 0),
+                       (2411724800, 6297173105888965833),
+                       (2643850,)]
+
+
+def _assert_host_buffer_checks_enabled(spark):
+    # Host buffer bounds are checked only under -ea, so without it a build that overflows a
+    # column corrupts memory instead of failing.
+    loader = spark._jvm.java.lang.Thread.currentThread().getContextClassLoader()
+    for name in ['com.nvidia.spark.rapids.RapidsHostColumnBuilder',
+                 'ai.rapids.cudf.MemoryBuffer']:
+        assert loader.loadClass(name).desiredAssertionStatus(), \
+            '{} needs JVM assertions enabled (-ea)'.format(name)
+
+
+def _over_2gib_from_rdd(spark, data_type):
+    rows = _over_2gib_rows
+    value_bytes = _over_2gib_value_bytes
+    as_binary = isinstance(data_type, BinaryType)
+
+    # Refers only to locals: a module-level helper would be pickled by reference, and the
+    # Python worker would have to import this module.
+    def gen(_):
+        for i in range(rows):
+            value = '%010d' % i + 'x' * (value_bytes - 10)
+            yield (i, bytearray(value.encode('ascii')) if as_binary else value)
+
+    schema = StructType([StructField('id', LongType(), False),
+                         StructField('c', data_type, False)])
+    return spark.createDataFrame(spark.sparkContext.parallelize([0], 1).flatMap(gen), schema)
+
+
+def _over_2gib_from_gpu_aggregate(spark, data_type):
+    # Range is ordered by id, so without the repartition the aggregate keeps Range's four
+    # partitions instead of shuffling into one.
+    df = spark.range(0, _over_2gib_rows, 1, 4) \
+        .withColumn('c', _padded_value_col(_over_2gib_value_bytes)) \
+        .repartition(4).groupBy('id').agg(f.max('c').alias('c'))
+    if isinstance(data_type, BinaryType):
+        # max does not take binary on the GPU, so the cast follows the aggregate.
+        df = df.select('id', f.col('c').cast('binary').alias('c'))
+    return df
+
+
+def _over_2gib_reads(spark, df, data_type, on_gpu):
+    """The reads _over_2gib_expected describes; with on_gpu, also check they use the GPU scan."""
+    prefix = f.substring('c', 1, 10)
+    if isinstance(data_type, BinaryType):
+        prefix = prefix.cast('string')
+    mismatched = prefix != f.lpad(f.col('id').cast('string'), 10, '0')
+    reads = [df.agg(f.sum(f.length('c')), f.sum(f.xxhash64('c')), f.sum('id'),
+                    f.count(f.when(mismatched, 1))),
+             df.agg(f.sum(f.length('c')), f.sum(f.xxhash64('c'))),
+             df.agg(f.sum('id'))]
+    results = [df.count()] + [tuple(read.collect()[0]) for read in reads]
+    if on_gpu:
+        for read in reads:
+            _assert_read_on_gpu_scan(spark, read)
+    return results
+
+
+@large_data_test
+@_requires_pcbs_lane
+@disable_ansi_mode  # sum(xxhash64(c)) wraps around
+# Only the cache build and its scan matter here, and the scan is checked explicitly.
+@allow_non_gpu(any=True)
+@pytest.mark.parametrize('route', [
+    'rdd',
+    pytest.param('aqe_gpu', marks=pytest.mark.skipif(not is_spark_35x(),
+        reason='only Spark 3.5.x hands an AQE-wrapped cached plan to the serializer as rows'))])
+@pytest.mark.parametrize('data_type', [StringType(), BinaryType()], ids=idfn)
+def test_cache_partition_with_column_over_2gib(data_type, route):
+    if not is_spark_local_mode():
+        pytest.skip('needs Spark local mode, where the driver is the JVM that builds the cache')
+    if os.environ.get('PYTEST_XDIST_WORKER') is not None:
+        pytest.skip('needs a single pytest worker (TEST_PARALLEL=1); see tests/README.md')
+    # The cached plan's root names the route: an RDD scan on the CPU, or an all-GPU aggregate
+    # whose shuffle makes AQE wrap the plan.
+    build_df, root = {
+        'rdd': (_over_2gib_from_rdd, 'Scan ExistingRDD'),
+        'aqe_gpu': (_over_2gib_from_gpu_aggregate, 'AdaptiveSparkPlan')}[route]
+
+    def check(spark):
+        pool = spark.conf.get('spark.rapids.memory.gpu.allocSize', None)
+        # The cached batch alone is about 2 GiB on the GPU, and slicing it copies it.
+        if pool is not None and \
+                spark._jvm.org.apache.spark.network.util.JavaUtils.byteStringAsBytes(pool) < 4 << 30:
+            pytest.skip('needs a GPU pool of more than {}; see tests/README.md'.format(pool))
+        _assert_host_buffer_checks_enabled(spark)
+        df = build_df(spark, data_type).cache()
+        plan = _cached_relation(spark, df).cachedPlan()
+        assert not plan.supportsColumnar(), \
+            'the cache takes the columnar entry: ' + plan.nodeName()
+        if plan.nodeName().startswith('WholeStageCodegen'):
+            plan = plan.child()
+        assert plan.nodeName().startswith(root), plan.nodeName()
+        assert df.count() == _over_2gib_rows
+        # Read as the tests above do; the cache is already built under the route's settings.
+        spark.conf.set('spark.rapids.sql.exec.InMemoryTableScanExec', 'true')
+        spark.conf.set('spark.sql.adaptive.enabled', 'false')
+        assert _over_2gib_reads(spark, df, data_type, True) == _over_2gib_expected
+        spark.conf.set('spark.rapids.sql.enabled', 'false')
+        assert _over_2gib_reads(spark, df, data_type, False) == _over_2gib_expected
+
+    with_gpu_session(check, conf={'spark.sql.adaptive.enabled': 'true',
+                                  'spark.sql.shuffle.partitions': '1'})
