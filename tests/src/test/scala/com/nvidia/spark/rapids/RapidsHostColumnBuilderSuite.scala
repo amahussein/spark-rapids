@@ -286,6 +286,29 @@ class RapidsHostColumnBuilderSuite extends AnyFunSuite {
     }
   }
 
+  test("a refilled snapshot restores the state of its last refill, string bytes included") {
+    withResource(new RapidsHostColumnBuilder(new ListType(true, stringType), 1)) { b =>
+      val strings = b.getChild(0)
+      def appendRow(value: String): Unit = {
+        strings.append(value)
+        b.endList()
+      }
+      appendRow("a")
+      val state = b.captureState()
+      appendRow("bb")
+      b.captureState(state)
+      appendRow("ccc")
+      b.restoreState(state)
+      appendRow("dd")
+      withResource(b.build()) { v =>
+        assertResult(3L)(v.getRowCount)
+        val child = v.getChildColumnView(0)
+        assertResult(Seq("a", "bb", "dd"))((0 until 3).map(i => child.getJavaString(i)))
+        assertNullCountsMatchMasks(v)
+      }
+    }
+  }
+
   test("appendUTF8String asserts on a subrange past the array before changing the builder") {
     // The subrange check is a Java assertion, so it only runs under -ea.
     assume(classOf[RapidsHostColumnBuilder].desiredAssertionStatus(), "needs -ea")
