@@ -21,9 +21,11 @@ import java.util.zip.CRC32
 
 import scala.collection.mutable.ArrayBuffer
 
-import ai.rapids.cudf.{DefaultHostMemoryAllocator, DType, HostColumnVector, HostColumnVectorCore, HostMemoryAllocator, HostMemoryBuffer, MemoryBuffer}
-import ai.rapids.cudf.HostColumnVector.{BasicType, ListType, StructType}
+import ai.rapids.cudf.{DType, HostColumnVectorCore, MemoryBuffer}
+import ai.rapids.cudf.HostColumnVector.{BasicType, ListType}
 import com.nvidia.spark.rapids.Arm.withResource
+import com.nvidia.spark.rapids.CudfTestHelper.{withRecordedHostAllocations, RecordingHostAllocator}
+import com.nvidia.spark.rapids.RapidsHostColumnBuilderSuite.limitMessage
 import com.nvidia.spark.rapids.RapidsPluginImplicits.AutoCloseableProducingArray
 import com.nvidia.spark.rapids.parquet.ParquetCachedBatchSerializer
 import org.scalactic.source.Position
@@ -43,24 +45,15 @@ import org.apache.spark.unsafe.array.ByteArrayMethods
 import org.apache.spark.unsafe.types.UTF8String
 
 /**
- * Tests that need several GiB of host memory: RapidsHostColumnBuilder at its real size limits,
- * and ParquetCachedBatchSerializer caching, through its row entry, one partition whose string or
- * binary column passes 2 GiB.
+ * Tests that need several GiB of host memory: RapidsHostColumnBuilder at its real string byte
+ * and element limits, and ParquetCachedBatchSerializer caching, through its row entry, one
+ * partition whose string or binary column passes 2 GiB.
  *
- * Each test is canceled unless spark.rapids.test.largeHostMemory.enabled=true is passed through
- * SPARK_CONF, and fails unless assertions are enabled for RapidsHostColumnBuilder and for cuDF's
- * MemoryBuffer, so that a column built past its limit fails an assertion instead of corrupting
- * memory. The tests need a GPU and an estimated 3 to 12 GiB of native host memory each, which
- * -Xmx does not bound: the row-limit cases allocate an 8 GiB offsets buffer while its 4 GiB
- * predecessor is open, the cache cases also hold a batch of up to about 4 GiB on the GPU, and one
- * case needs a 2 GiB array in the 4 GiB test heap. Run them without parallel unit tests, together
- * with the real-size case in RowToColumnarIteratorRetrySuite, which reads the same setting:
- * {{{
- * SPARK_CONF=spark.rapids.test.largeHostMemory.enabled=true \
- *   mvn package -pl tests -am -Dbuildver=353 \
- *   -DwildcardSuites=com.nvidia.spark.rapids.LargeHostMemorySuite,\
- * com.nvidia.spark.rapids.RowToColumnarIteratorRetrySuite
- * }}}
+ * They are opt-in: each test is canceled unless spark.rapids.test.largeHostMemory.enabled=true
+ * is passed through SPARK_CONF, and fails unless assertions are enabled for
+ * RapidsHostColumnBuilder and for cuDF's MemoryBuffer, so that a column built past its limit
+ * fails an assertion instead of corrupting memory. See "Large Host Memory Tests" in
+ * tests/README.md for how to run them.
  */
 class LargeHostMemorySuite extends SparkQueryCompareTestSuite {
   import LargeHostMemorySuite._
@@ -68,12 +61,6 @@ class LargeHostMemorySuite extends SparkQueryCompareTestSuite {
   largeTest("a string column accepts 1 MiB values up to its byte limit and rejects the next " +
       "one without changing") {
     checkStringByteLimit(ONE_MIB, ROWS_UNDER_LIMIT, END_OFFSET)
-  }
-
-  largeTest("a string column of uneven value sizes stops at its byte limit without growing " +
-      "its buffer past it") {
-    // 2147 values of 1,000,003 bytes fit, and doubling from that size overshoots the limit.
-    checkStringByteLimit(1000003, 2147, 2147006441L)
   }
 
   largeTest("a binary column accepts bytes up to its element limit and rejects the next value " +
@@ -99,184 +86,6 @@ class LargeHostMemorySuite extends SparkQueryCompareTestSuite {
       }
       assertAllClosed(allocations)
       assertLargestAtMost(allocations, MAX_ELEMENTS)
-    }
-  }
-
-  largeTest("a list of strings rejects in its string child at the byte limit and rolls back " +
-      "to a valid prefix") {
-    val value = newValue(ONE_MIB)
-    // Two 1 MiB strings per row, so the row that crosses the limit already holds a legal value.
-    val rowsBefore = (MAX_STRING_BYTES / (2L * ONE_MIB)).toInt
-    withRecordedHostAllocations { allocations =>
-      withResource(new RapidsHostColumnBuilder(new ListType(false, STRING), 1)) { builder =>
-        val strings = builder.getChild(0)
-        (0 until rowsBefore).foreach { row =>
-          writeRowPrefix(value, row)
-          strings.appendUTF8String(value)
-          strings.appendUTF8String(value)
-          builder.endList()
-        }
-        val beforeRow = builder.captureState()
-        writeRowPrefix(value, rowsBefore)
-        strings.appendUTF8String(value)
-        assertRejected(builder, STRING_BYTES, (2L * rowsBefore + 2) * ONE_MIB, MAX_STRING_BYTES,
-          DType.STRING)(strings.appendUTF8String(value))
-        builder.restoreState(beforeRow)
-        withResource(builder.build()) { column =>
-          assertResult(rowsBefore.toLong)(column.getRowCount)
-          val stringColumn = column.getChildColumnView(0)
-          assertResult(2L * rowsBefore)(stringColumn.getRowCount)
-          assertResult(2L * rowsBefore * ONE_MIB)(stringOffset(stringColumn, 2L * rowsBefore))
-          assert(hasRowPrefix(stringColumn.getUTF8(2L * rowsBefore - 1), rowsBefore - 1L))
-        }
-      }
-      assertAllClosed(allocations)
-      assertLargestAtMost(allocations, MAX_STRING_BYTES)
-    }
-  }
-
-  largeTest("a string column accepts a value just under its byte limit, then exactly the rest, " +
-      "and rejects one more byte") {
-    withRecordedHostAllocations { allocations =>
-      withResource(new RapidsHostColumnBuilder(STRING, 1)) { builder =>
-        appendZeros(builder, NEAR_LIMIT_BYTES)
-        builder.appendUTF8String(newValue((MAX_STRING_BYTES - NEAR_LIMIT_BYTES).toInt))
-        assertRejected(builder, STRING_BYTES, MAX_STRING_BYTES + 1, MAX_STRING_BYTES,
-          DType.STRING)(builder.appendUTF8String(newValue(1)))
-        withResource(builder.build()) { column =>
-          assertResult(2L)(column.getRowCount)
-          assertResult(NEAR_LIMIT_BYTES.toLong)(stringOffset(column, 1))
-          assertResult(MAX_STRING_BYTES)(stringOffset(column, 2))
-        }
-      }
-      assertAllClosed(allocations)
-      assertLargestAtMost(allocations, MAX_STRING_BYTES)
-    }
-  }
-
-  largeTest("a row whose second string column rejects fails and leaves neither column open") {
-    val shortValue = newValue(PREFIX_BYTES)
-    val largeValue = newValue(ONE_MIB)
-    withRecordedHostAllocations { allocations =>
-      var completedRows = 0
-      val e = intercept[ColumnLimitExceededException] {
-        withResource(new RapidsHostColumnBuilder(STRING, 1)) { first =>
-          withResource(new RapidsHostColumnBuilder(STRING, 1)) { second =>
-            (0 until LIMIT_CROSSING_ROWS).foreach { row =>
-              writeRowPrefix(shortValue, row)
-              writeRowPrefix(largeValue, row)
-              first.appendUTF8String(shortValue)
-              second.appendUTF8String(largeValue)
-              completedRows += 1
-            }
-          }
-        }
-      }
-      assertResult(limitMessage(STRING_BYTES, END_OFFSET + ONE_MIB, MAX_STRING_BYTES,
-        DType.STRING))(e.getMessage)
-      assertResult(ROWS_UNDER_LIMIT)(completedRows)
-      assertAllClosed(allocations)
-    }
-  }
-
-  largeTest("a fixed-width column accepts exactly its element limit and rejects one more") {
-    val chunk = newValue(ONE_MIB)
-    withRecordedHostAllocations { allocations =>
-      withResource(new RapidsHostColumnBuilder(INT8, 1)) { builder =>
-        appendInChunks(MAX_ELEMENTS)(length => builder.append(chunk, 0, length))
-        assertResult(MAX_ELEMENTS)(builder.getCurrentIndex.toLong)
-        assertRejected(builder, ELEMENT_COUNT, MAX_ELEMENTS + 1, MAX_ELEMENTS,
-          DType.INT8)(builder.append(1.toByte))
-      }
-      assertAllClosed(allocations)
-      assertLargestAtMost(allocations, MAX_ELEMENTS)
-    }
-  }
-
-  largeTest("an array of binary accepts exactly its byte element limit and rejects one more") {
-    val chunk = newValue(ONE_MIB)
-    withRecordedHostAllocations { allocations =>
-      withResource(new RapidsHostColumnBuilder(new ListType(false, BINARY), 1)) { builder =>
-        val binaries = builder.getChild(0)
-        appendInChunks(MAX_ELEMENTS)(length => binaries.appendByteList(chunk, 0, length))
-        assertResult(MAX_ELEMENTS)(binaries.getChild(0).getCurrentIndex.toLong)
-        assertRejected(builder, ELEMENT_COUNT, MAX_ELEMENTS + 1, MAX_ELEMENTS,
-          DType.UINT8)(binaries.appendByteList(chunk, 0, 1))
-      }
-      assertAllClosed(allocations)
-      assertLargestAtMost(allocations, MAX_ELEMENTS)
-    }
-  }
-
-  largeTest("a struct column accepts exactly its row limit and rejects one more") {
-    withRecordedHostAllocations { allocations =>
-      // With no children the struct reaches its own row limit, not a child's.
-      withResource(new RapidsHostColumnBuilder(new StructType(false), 1)) { builder =>
-        repeat(MAX_STRUCT_ROWS)(builder.endStruct())
-        assertResult(MAX_STRUCT_ROWS)(builder.getCurrentIndex.toLong)
-        assertRejected(builder, ROW_COUNT, MAX_STRUCT_ROWS + 1, MAX_STRUCT_ROWS,
-          DType.STRUCT)(builder.endStruct())
-      }
-      assertAllClosed(allocations)
-    }
-  }
-
-  largeTest("a string column accepts exactly its row limit and rejects one more") {
-    val empty = new Array[Byte](0)
-    checkOffsetRowLimit(STRING, DType.STRING)(identity)(_.appendUTF8String(empty))
-  }
-
-  largeTest("a list column accepts exactly its row limit and rejects one more") {
-    checkOffsetRowLimit(LIST_OF_INT8, DType.LIST)(identity)(_.endList())
-  }
-
-  largeTest("a list inside a list accepts exactly its row limit and rejects one more") {
-    checkOffsetRowLimit(new ListType(false, LIST_OF_INT8), DType.LIST)(_.getChild(0))(_.endList())
-  }
-
-  largeTest("a fixed-width column sizes its first buffer within its element limit, whatever " +
-      "its row estimate") {
-    withRecordedHostAllocations { allocations =>
-      withResource(new RapidsHostColumnBuilder(INT8, ESTIMATE_ABOVE_LIMITS)) { builder =>
-        builder.append(1.toByte)
-        assertResult(1)(builder.getCurrentIndex)
-      }
-      assertAllClosed(allocations)
-      assertLargestAtMost(allocations, MAX_ELEMENTS)
-    }
-  }
-
-  largeTest("two string columns at their limits roll back the column that accepted the row " +
-      "the other rejected") {
-    val firstValue = newValue(ONE_MIB - 1)
-    val secondValue = newValue(ONE_MIB)
-    withRecordedHostAllocations { allocations =>
-      withResource(new RapidsHostColumnBuilder(STRING, 1)) { first =>
-        withResource(new RapidsHostColumnBuilder(STRING, 1)) { second =>
-          (0 until ROWS_UNDER_LIMIT).foreach { row =>
-            writeRowPrefix(firstValue, row)
-            writeRowPrefix(secondValue, row)
-            first.appendUTF8String(firstValue)
-            second.appendUTF8String(secondValue)
-          }
-          writeRowPrefix(firstValue, ROWS_UNDER_LIMIT)
-          writeRowPrefix(secondValue, ROWS_UNDER_LIMIT)
-          val beforeRow = first.captureState()
-          // 2048 values of 1,048,575 bytes end at 2,147,481,600, within the limit.
-          first.appendUTF8String(firstValue)
-          assertResult(ROWS_UNDER_LIMIT + 1)(first.getCurrentIndex)
-          assertRejected(second, STRING_BYTES, END_OFFSET + ONE_MIB, MAX_STRING_BYTES,
-            DType.STRING)(second.appendUTF8String(secondValue))
-          first.restoreState(beforeRow)
-          withResource(first.build()) { column =>
-            assertResult(ROWS_UNDER_LIMIT.toLong)(column.getRowCount)
-            assertResult(ROWS_UNDER_LIMIT.toLong * (ONE_MIB - 1))(
-              stringOffset(column, ROWS_UNDER_LIMIT))
-          }
-        }
-      }
-      assertAllClosed(allocations)
-      assertLargestAtMost(allocations, MAX_STRING_BYTES)
     }
   }
 
@@ -348,26 +157,6 @@ class LargeHostMemorySuite extends SparkQueryCompareTestSuite {
       }
       assertAllClosed(allocations)
       assertLargestAtMost(allocations, MAX_STRING_BYTES)
-    }
-  }
-
-  /**
-   * Fills the column that `limited` picks out of a new builder of `dataType` with
-   * `appendRow` up to the offsets' row limit, then checks that one more row is rejected.
-   */
-  private def checkOffsetRowLimit(dataType: HostColumnVector.DataType, limitedType: DType)(
-      limited: RapidsHostColumnBuilder => RapidsHostColumnBuilder)(
-      appendRow: RapidsHostColumnBuilder => Any): Unit = {
-    withRecordedHostAllocations { allocations =>
-      withResource(new RapidsHostColumnBuilder(dataType, 1)) { builder =>
-        val column = limited(builder)
-        repeat(MAX_OFFSET_ROWS)(appendRow(column))
-        assertResult(MAX_OFFSET_ROWS)(column.getCurrentIndex.toLong)
-        assertRejected(builder, ROW_COUNT, MAX_OFFSET_ROWS + 1, MAX_OFFSET_ROWS,
-          limitedType)(appendRow(column))
-      }
-      assertAllClosed(allocations)
-      assertLargestAtMost(allocations, (MAX_OFFSET_ROWS + 1) * OFFSET_BYTES)
     }
   }
 
@@ -450,8 +239,6 @@ object LargeHostMemorySuite {
   // The production limits, written out so that a change to them fails here.
   private val MAX_STRING_BYTES = 2147483647L
   private val MAX_ELEMENTS = 2147483646L
-  private val MAX_OFFSET_ROWS = 2147483645L
-  private val MAX_STRUCT_ROWS = 2147483646L
 
   // 2047 values of 1 MiB end at END_OFFSET, within both the string byte limit and the element
   // limit; the 2048th crosses both.
@@ -461,30 +248,18 @@ object LargeHostMemorySuite {
   // Rows of about 1 MiB per column: 1.2 GiB and 2.2 GiB of each column.
   private val ROWS_1_2_GIB = 1229
   private val ROWS_2_2_GIB = 2253
-  // The soft maximum array length the JDK's own collections use.
-  private val NEAR_LIMIT_BYTES = Int.MaxValue - 8
-  private val ESTIMATE_ABOVE_LIMITS = 1L << 32
   // The GPU writer's slice budget stays 10 MiB below 2 GiB.
   private val GPU_SLICE_BUDGET_CEILING = 2L * 1024 * 1024 * 1024 - 10L * 1024 * 1024
 
   private val STRING_BYTES = "The string data size in bytes"
   private val ELEMENT_COUNT = "The number of elements"
-  private val ROW_COUNT = "The number of rows"
 
   private val STRING = new BasicType(false, DType.STRING)
-  private val INT8 = new BasicType(false, DType.INT8)
   private val BINARY = new ListType(false, new BasicType(false, DType.UINT8))
-  private val LIST_OF_INT8 = new ListType(false, INT8)
 
   // Every value starts with its zero-padded row number, so a value in the wrong row is found.
   private val PREFIX_BYTES = 10
   private val FILLER = 'x'.toByte
-
-  private def limitMessage(what: String, attempted: Long, limit: Long,
-      columnType: DType): String =
-    s"$what would be $attempted, exceeding the limit of $limit for a column of cuDF type " +
-      s"$columnType; split the input into smaller batches or partitions, or reduce the size of " +
-      "individual values"
 
   private def newValue(bytes: Int): Array[Byte] = {
     val value = new Array[Byte](bytes)
@@ -516,67 +291,6 @@ object LargeHostMemorySuite {
 
   private def stringOffset(column: HostColumnVectorCore, row: Long): Long =
     column.getOffsets.getInt(row * OFFSET_BYTES).toLong
-
-  private def repeat(times: Long)(body: => Unit): Unit = {
-    var i = 0L
-    while (i < times) {
-      body
-      i += 1
-    }
-  }
-
-  /** Calls `append` with lengths of at most 1 MiB that add up to `total`. */
-  private def appendInChunks(total: Long)(append: Int => Unit): Unit = {
-    var remaining = total
-    while (remaining > 0) {
-      val length = math.min(remaining, ONE_MIB.toLong).toInt
-      append(length)
-      remaining -= length
-    }
-  }
-
-  /** Appends a value of `bytes` zero bytes, whose array is unreachable once this returns. */
-  private def appendZeros(builder: RapidsHostColumnBuilder, bytes: Int): Unit =
-    builder.appendUTF8String(new Array[Byte](bytes))
-
-  /** Delegates host allocations, recording the largest request and every buffer returned. */
-  private class RecordingHostAllocator(delegate: HostMemoryAllocator)
-      extends HostMemoryAllocator {
-    private val buffers = ArrayBuffer[HostMemoryBuffer]()
-    private var largestRequest = 0L
-
-    override def allocate(amount: Long, preferPinned: Boolean): HostMemoryBuffer =
-      record(amount)(delegate.allocate(amount, preferPinned))
-
-    override def allocate(amount: Long): HostMemoryBuffer =
-      record(amount)(delegate.allocate(amount))
-
-    private def record(amount: Long)(doAllocate: => HostMemoryBuffer): HostMemoryBuffer = {
-      synchronized {
-        largestRequest = math.max(largestRequest, amount)
-      }
-      val buffer = doAllocate
-      synchronized {
-        buffers += buffer
-      }
-      buffer
-    }
-
-    def largest: Long = synchronized(largestRequest)
-
-    def allClosed: Boolean = synchronized(buffers.forall(_.getRefCount == 0))
-  }
-
-  private def withRecordedHostAllocations[T](body: RecordingHostAllocator => T): T = {
-    val previous = DefaultHostMemoryAllocator.get()
-    val recorder = new RecordingHostAllocator(previous)
-    DefaultHostMemoryAllocator.set(recorder)
-    try {
-      body(recorder)
-    } finally {
-      DefaultHostMemoryAllocator.set(previous)
-    }
-  }
 
   /** A non-null column of `valueBytes`-byte values. */
   private case class ValueColumn(name: String, dataType: DataType, valueBytes: Int)
