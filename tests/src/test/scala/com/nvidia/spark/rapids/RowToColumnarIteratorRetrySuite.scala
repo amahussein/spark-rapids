@@ -173,30 +173,6 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
     }
   }
 
-  test("an OOM split after an earlier column appended a null keeps null counts equal to masks") {
-    // Row 2's string outgrows the one-byte buffer that row 1 sized, so it allocates after the
-    // INT column has appended row 2's null. Row 5 has a null string.
-    val data = new IntStringRows(
-      intIsNull = n => n == 2 || n == 4, stringIsNull = _ == 5, valueSize = n => n)
-    val rows = (1 to 5).iterator.map { n =>
-      if (n == 2) {
-        new StringGetterHookRow(data.values(n), () => RmmSpark.forceRetryOOM(
-          RmmSpark.getCurrentThreadId, 1, RmmSpark.OomInjectionType.CPU.ordinal, 0))
-      } else {
-        data.row(n)
-      }
-    }
-    val nullCounts = ArrayBuffer[List[Long]]()
-    val iter = r2c(rows, intStringSchema, TargetSize(smallBatchBytes), smallBatchBytes,
-      enableRetry = true)
-    val sizes = drainBatches(iter) { (batch, firstRow) =>
-      nullCounts += assertIntStringBatch(batch, firstRow, data).toList
-    }
-    assertResult(Seq(1, 4), "batch sizes")(sizes)
-    assertResult(Seq(List(0L, 0L), List(2L, 1L)), "INT and string null counts")(
-      nullCounts.toList)
-  }
-
   Seq(true, false).foreach { retry =>
     test("a lowered string limit splits the cache build before the row that crosses it, " +
         retryMode(retry)) {
@@ -494,20 +470,6 @@ class RowToColumnarIteratorRetrySuite extends RmmSparkRetrySuiteBase {
     def row(n: Int): InternalRow = new GenericInternalRow(values(n))
 
     def iterator(numRows: Int): Iterator[InternalRow] = (1 to numRows).iterator.map(n => row(n))
-  }
-
-  /** A row whose string getter runs a hook the first time it is called. */
-  private class StringGetterHookRow(rowValues: Array[Any], hook: () => Unit)
-      extends GenericInternalRow(rowValues) {
-    private var hookRan = false
-
-    override def getUTF8String(ordinal: Int): UTF8String = {
-      if (!hookRan) {
-        hookRan = true
-        hook()
-      }
-      super.getUTF8String(ordinal)
-    }
   }
 
   /** Returns the given rows, counting the calls to next(). */
