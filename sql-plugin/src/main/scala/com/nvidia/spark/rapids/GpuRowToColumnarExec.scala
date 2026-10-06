@@ -659,12 +659,22 @@ class RowToColumnarIterator(
     var rowCount = 0
     var byteCount: Double = 0
 
+    // One snapshot for the batch, refilled before each row.
+    var snapshots: Array[RapidsHostColumnBuilder.BuilderSnapshot] = null
+    def captureState(): Unit = {
+      if (snapshots == null) {
+        snapshots = builders.captureState()
+      } else {
+        builders.captureState(snapshots)
+      }
+    }
+
     if (enableRetry) {
       var batchDone = false
       RmmRapidsRetryIterator.withRetryBlock {
         while (!batchDone && hasNext &&
             (rowCount == 0 || rowCount < targetRows && byteCount < targetSizeBytes)) {
-          val snapshots = builders.captureState()
+          captureState()
           var row: InternalRow = null
           try {
             row = nextRow()
@@ -706,7 +716,7 @@ class RowToColumnarIterator(
       while (!batchDone && hasNext &&
           (rowCount == 0 || rowCount < targetRows && byteCount < targetSizeBytes)) {
         val row = nextRow()
-        val snapshots = builders.captureState()
+        captureState()
         try {
           byteCount += converters.convert(row, builders)
           rowCount += 1

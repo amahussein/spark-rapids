@@ -149,13 +149,13 @@ public final class RapidsHostColumnBuilder implements AutoCloseable {
   }
 
   /**
-   * Immutable snapshot of a builder and all of its children so the state can be restored
-   * if an exception happens while appending a row.
+   * Snapshot of a builder and all of its children so the state can be restored if an exception
+   * happens while appending a row. {@link #captureState(BuilderSnapshot)} can refill it.
    */
   public static final class BuilderSnapshot {
-    private final long rows;
-    private final long currentIndex;
-    private final long currentStringByteIndex;
+    private long rows;
+    private long currentIndex;
+    private long currentStringByteIndex;
     private final BuilderSnapshot[] childStates;
 
     private BuilderSnapshot(long rows,
@@ -187,6 +187,21 @@ public final class RapidsHostColumnBuilder implements AutoCloseable {
    */
   public BuilderSnapshot captureState() {
     return new BuilderSnapshot(rows, currentIndex, currentStringByteIndex, captureChildStates());
+  }
+
+  /**
+   * Refills a snapshot that {@link #captureState()} returned for this builder, so that a caller
+   * taking one per row allocates it only once.
+   */
+  public void captureState(BuilderSnapshot into) {
+    into.rows = rows;
+    into.currentIndex = currentIndex;
+    into.currentStringByteIndex = currentStringByteIndex;
+    if (into.childStates != null) {
+      for (int i = 0; i < into.childStates.length; i++) {
+        childBuilders.get(i).captureState(into.childStates[i]);
+      }
+    }
   }
 
   /**
@@ -398,7 +413,9 @@ public final class RapidsHostColumnBuilder implements AutoCloseable {
    * multiple values or nulls.
    */
   private void growFixedWidthBuffersAndRows(int numRows) {
-    if (rows + numRows > limits.maxFixedWidthElements) {
+    // Capacities never exceed the limits, so only a buffer that must grow can reach one.
+    if ((data == null || rows + numRows > rowCapacity) &&
+        rows + numRows > limits.maxFixedWidthElements) {
       throw limitExceeded("The number of elements", rows + numRows,
           limits.maxFixedWidthElements);
     }
@@ -422,7 +439,9 @@ public final class RapidsHostColumnBuilder implements AutoCloseable {
    * incrementing the row counts. Please call this method before appending any value or null.
    */
   private void growListBuffersAndRows() {
-    checkOffsetRows();
+    if (offsets == null || rows + 1 > rowCapacity) {
+      checkOffsetRows();
+    }
     assert rows + 2 <= Integer.MAX_VALUE : "Row count cannot go over Integer.MAX_VALUE";
     rows++;
 
@@ -445,11 +464,13 @@ public final class RapidsHostColumnBuilder implements AutoCloseable {
    * @param stringLength number of bytes required by the next row
    */
   private void growStringBuffersAndRows(int stringLength) {
-    checkOffsetRows();
     long currentLength = (long) currentStringByteIndex + stringLength;
-    if (currentLength > limits.maxStringBytes) {
-      throw limitExceeded("The string data size in bytes", currentLength,
-          limits.maxStringBytes);
+    if (offsets == null || rows + 1 > rowCapacity || currentLength > data.getLength()) {
+      checkOffsetRows();
+      if (currentLength > limits.maxStringBytes) {
+        throw limitExceeded("The string data size in bytes", currentLength,
+            limits.maxStringBytes);
+      }
     }
     assert rows + 2 <= Integer.MAX_VALUE : "Row count cannot go over Integer.MAX_VALUE";
     rows++;
@@ -492,7 +513,7 @@ public final class RapidsHostColumnBuilder implements AutoCloseable {
    * Please call this method before appending any value or null.
    */
   private void growStructBuffersAndRows() {
-    if (rows + 1 > limits.maxStructRows) {
+    if ((rowCapacity == 0 || rows + 1 > rowCapacity) && rows + 1 > limits.maxStructRows) {
       throw limitExceeded("The number of rows", rows + 1, limits.maxStructRows);
     }
     assert rows + 1 <= Integer.MAX_VALUE : "Row count cannot go over Integer.MAX_VALUE";
