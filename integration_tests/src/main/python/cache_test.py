@@ -535,8 +535,8 @@ def test_cache_binary_on_gpu(enable_vectorized_conf):
         func, exist_classes='GpuInMemoryTableScanExec', conf=dyn_conf)
 
 
-_requires_pcbs_lane = pytest.mark.skipif(not _pcbs_enabled,
-    reason="requires PCBS lane: "
+_requires_pcbs_enabled = pytest.mark.skipif(not _pcbs_enabled,
+    reason="requires PCBS: "
            "PYSP_TEST_spark_sql_cache_serializer=com.nvidia.spark.ParquetCachedBatchSerializer")
 
 # Keeps the cached scan on the GPU across shims, as in the tests above.
@@ -562,7 +562,7 @@ def _padded_value_col(value_bytes):
     return f.rpad(f.lpad(f.col('id').cast('string'), 10, '0'), value_bytes, 'x')
 
 
-@_requires_pcbs_lane
+@_requires_pcbs_enabled
 @allow_non_gpu(any=True)
 @pytest.mark.parametrize('num_rows', [0, 5000], ids=idfn)
 def test_cache_zero_columns_from_rows(num_rows):
@@ -650,7 +650,7 @@ def _over_2gib_reads(spark, df, data_type, on_gpu):
 
 
 @large_data_test
-@_requires_pcbs_lane
+@_requires_pcbs_enabled
 @disable_ansi_mode  # sum(xxhash64(c)) wraps around
 # Only the cache build and its scan matter here, and the scan is checked explicitly.
 @allow_non_gpu(any=True)
