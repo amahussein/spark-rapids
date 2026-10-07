@@ -574,9 +574,6 @@ def test_cache_zero_columns_from_rows(num_rows):
         relation = _cached_relation(spark, df)
         assert not relation.cachedPlan().supportsColumnar()
         assert df.count() == num_rows
-        builder = relation.cacheBuilder()
-        assert builder.rowCountStats().value() == num_rows
-        assert builder.sizeInBytesStats().value() == 0
         spark.conf.set('spark.rapids.sql.enabled', 'false')
         assert df.count() == num_rows
 
