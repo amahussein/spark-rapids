@@ -1111,10 +1111,15 @@ def test_null_safe_literal_key_join_rows_only_build(join_type):
         left = spark.range(0, 30).selectExpr('CAST(id % 3 AS INT) AS a')
         right = gen_df(spark, [('b', int_gen)], length=2100)
         return left.join(right, left.a.eqNullSafe(lit(1)), join_type).select(left.a)
-    assert_gpu_and_cpu_are_equal_collect(do_join, conf={
+    conf = {
         'spark.rapids.sql.exec.ShuffleExchangeExec': 'false',
         'spark.sql.autoBroadcastJoinThreshold': '-1',
-        'spark.sql.adaptive.autoBroadcastJoinThreshold': '-1'})
+        'spark.sql.adaptive.autoBroadcastJoinThreshold': '-1'}
+    # EMR's HybridHashJoin fails with an AssertionError on a build side with no columns, which
+    # aborts the CPU run under the tests' -ea. Turning it off leaves the GPU plan unchanged.
+    if is_emr_runtime():
+        conf['spark.sql.join.hybridHashJoin.enabled'] = 'false'
+    assert_gpu_and_cpu_are_equal_collect(do_join, conf=conf)
 
 # local sort because of https://github.com/NVIDIA/spark-rapids/issues/84
 # After 3.1.0 is the min spark version we can drop this
