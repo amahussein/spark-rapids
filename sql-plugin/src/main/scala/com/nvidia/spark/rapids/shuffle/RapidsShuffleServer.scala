@@ -613,14 +613,15 @@ class RapidsShuffleServer(transport: RapidsShuffleTransport,
 
               val responseTx = tx.respond(respBuffer.getBuffer(),
                 withResource(_) { responseTx =>
-                  responseTx.getStatus match {
-                    case TransactionStatus.Success =>
-                      withResource(respBuffer) { _ =>
+                  withResource(respBuffer) { _ =>
+                    responseTx.getStatus match {
+                      case TransactionStatus.Success =>
                         val stats = responseTx.getStats
                         logDebug(s"Sent metadata ${stats.sendSize} in ${stats.txTimeMs} ms")
-                      }
-                    case TransactionStatus.Error =>
-                      logError(s"Error sending metadata response in tx $tx")
+                      case _ =>
+                        // a failed send can report InProgress here rather than Error
+                        logError(s"Error sending metadata response in tx $tx")
+                    }
                   }
                 })
               logDebug(s"Waiting for send metadata to complete: $responseTx")
