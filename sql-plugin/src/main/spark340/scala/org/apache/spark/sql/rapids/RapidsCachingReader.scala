@@ -113,12 +113,12 @@ class RapidsCachingReader[K, C](
                   (sbbid.startReduceId to sbbid.endReduceId).iterator.flatMap { reduceId =>
                     val sbid = ShuffleBlockId(sbbid.shuffleId, sbbid.mapId, reduceId)
                     numCachedBlocks += 1
-                    new CachedShuffleBlockIterator(
+                    new LocalCachedShuffleBlockIterator(
                       catalog, sbid, sparkTypes, blockManagerId, blockInfo._3)
                   }
                 case sbid: ShuffleBlockId =>
                   numCachedBlocks += 1
-                  new CachedShuffleBlockIterator(
+                  new LocalCachedShuffleBlockIterator(
                     catalog, sbid, sparkTypes, blockManagerId, blockInfo._3)
                 case _ => throw new IllegalArgumentException(
                   s"${blockId.getClass} $blockId is not currently supported")

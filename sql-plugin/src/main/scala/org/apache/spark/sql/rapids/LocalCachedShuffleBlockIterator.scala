@@ -32,7 +32,7 @@ import org.apache.spark.storage.{BlockManagerId, ShuffleBlockId}
  *                 `ShuffleStatus.removeMapOutput` must match exactly to drop the map's output
  * @param mapIndex the index of the map that wrote the block
  */
-private[rapids] class CachedShuffleBlockIterator(
+private[rapids] class LocalCachedShuffleBlockIterator(
     catalog: ShuffleBufferCatalog,
     blockId: ShuffleBlockId,
     sparkTypes: Array[DataType],
