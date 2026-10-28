@@ -1986,4 +1986,26 @@ class RapidsShuffleServerSuite extends RapidsShuffleTestHelper {
     // releases the reply as the transport would, and throws if the server closed it already
     sent.getValue.apply(mock[Transaction])
   }
+
+  test("a metadata request that fails after the server closed gets no reply, and none is built") {
+    val requestHandler = mock[RapidsShuffleRequestHandler]
+    when(requestHandler.getShuffleBufferMetas(any()))
+      .thenThrow(new ShuffleOutputGoneException("unknown shuffle 1"))
+    val serverConnection = mock[ServerConnection]
+    val server = newServer(requestHandler, serverConnection)
+    val onRequest = startForMetadata(server, serverConnection)
+    server.close()
+    val requestTx = makeMetadataTx(ShuffleBlockBatchId(1, 7L, 2, 2))
+    withResource(mockConstruction(classOf[RefCountedDirectByteBuffer])) { built =>
+      val logs = LogCaptureUtils.captureLogsFrom(Seq(classOf[RapidsShuffleServer].getName)) {
+        onRequest(requestTx)
+      }
+      assert(built.constructed().isEmpty, "the server built a reply after it closed")
+      assertResult(1)(logs.count(_.startsWith("Unable to serve metadata request")))
+      assertResult(1)(logs.count(_.startsWith("Not answering metadata request")))
+    }
+    verify(requestHandler, times(1)).getShuffleBufferMetas(any())
+    verify(requestTx, never()).respond(any(), any())
+    verify(requestTx, times(1)).close()
+  }
 }
