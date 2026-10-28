@@ -155,14 +155,10 @@ class RapidsCachingReaderSuite extends RmmSparkRetrySuiteBase with MockitoSugar 
       handle.synchronized {
         reader.start()
         eventually(Timeout(Span(awaitSeconds, Seconds))) {
-          val info = threads.getThreadInfo(reader.getId, 1)
+          val info = threads.getThreadInfo(reader.getId)
           assert(info != null && info.getThreadState == Thread.State.BLOCKED &&
             info.getLockInfo.getIdentityHashCode == System.identityHashCode(handle),
-            "the read never reached the buffer's materialize")
-          // other methods take this monitor too, so the read must wait in materialize itself
-          val top = info.getStackTrace.head
-          assertResult((classOf[SpillableDeviceBufferHandle].getName, "materialize"))(
-            (top.getClassName, top.getMethodName))
+            "the read never blocked on the buffer's monitor")
         }
         catalog.unregisterShuffle(block.shuffleId)
       }
@@ -171,6 +167,8 @@ class RapidsCachingReaderSuite extends RmmSparkRetrySuiteBase with MockitoSugar 
       outcome.get match {
         case Failure(e: FetchFailedException) =>
           assertOutputGone(e)
+          // only the catch around materialize gives the gone output a cause, so a read that
+          // blocked on the monitor anywhere before materialize fails here
           assert(e.getCause.getCause.isInstanceOf[IllegalStateException], e.getCause.getCause)
         case other => fail(s"the read ended in $other")
       }
