@@ -2008,4 +2008,52 @@ class RapidsShuffleServerSuite extends RapidsShuffleTestHelper {
     verify(requestTx, never()).respond(any(), any())
     verify(requestTx, times(1)).close()
   }
+
+  test("a metadata response is released by its callback, whether its send succeeds or fails") {
+    Seq(false, true).foreach { sendFails =>
+      // The response goes through the real UCX server connection and transaction, with only UCX
+      // mocked, so that its send completes as UCX reports it: a failed send stays InProgress.
+      val ucx = mock[UCX]
+      val connection = new UCXServerConnection(ucx, mock[UCXShuffleTransport])
+      val requestHandler = mock[RapidsShuffleRequestHandler]
+      val tableMeta = MetaUtils.buildTableMeta(1, 456, ByteBuffer.allocate(8), 100)
+      when(requestHandler.getShuffleBufferMetas(any())).thenReturn(Seq(tableMeta))
+      val requestTx = makeMetadataTx(ShuffleBlockBatchId(1, 7L, 2, 2))
+      doAnswer(new Answer[Transaction] {
+        override def answer(invocation: InvocationOnMock): Transaction =
+          connection.send(2L, MessageType.MetadataRequest, 0L,
+            invocation.getArgument[ByteBuffer](0), invocation.getArgument[TransactionCallback](1))
+      }).when(requestTx).respond(any(), any())
+      val serverConnection = mock[ServerConnection]
+      val onRequest =
+        startForMetadata(newServer(requestHandler, serverConnection), serverConnection)
+
+      withResource(mockConstruction(classOf[RefCountedDirectByteBuffer])) { built =>
+        // the transaction's class is private to its package, so its logger is named here
+        val logs = LogCaptureUtils.captureLogsFrom(Seq(classOf[RapidsShuffleServer].getName,
+            "com.nvidia.spark.rapids.shuffle.ucx.UCXTransaction")) {
+          onRequest(requestTx)
+          val completion = ArgumentCaptor.forClass(classOf[UcxCallback])
+          verify(ucx, times(1)).sendActiveMessage(
+            anyLong(), any[UCXActiveMessage](), any[ByteBuffer](), completion.capture())
+          // the response stays open until its send calls back
+          verify(built.constructed().get(0), never()).close()
+          if (sendFails) {
+            completion.getValue.onError(-1, "the peer is gone in test")
+          } else {
+            completion.getValue.onSuccess(null)
+          }
+        }
+
+        withClue(s"when the send ${if (sendFails) "fails" else "succeeds"}: ") {
+          // the callback threw nothing into the transaction's callback wrapper
+          assertResult(0)(logs.count(_.startsWith("Detected an exception from user code")))
+          assertResult(if (sendFails) 1 else 0)(
+            logs.count(_.startsWith("Error sending metadata response")))
+          assertResult(1)(built.constructed().size)
+          verify(built.constructed().get(0), times(1)).close()
+        }
+      }
+    }
+  }
 }
