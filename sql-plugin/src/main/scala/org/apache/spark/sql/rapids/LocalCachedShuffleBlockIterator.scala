@@ -40,28 +40,20 @@ private[rapids] class LocalCachedShuffleBlockIterator(
     mapIndex: Int) extends Iterator[ColumnarBatch] {
 
   private[this] val batches: Iterator[ColumnarBatch] =
-    try {
-      catalog.getColumnarBatchIterator(blockId, sparkTypes)
-    } catch {
-      case e: ShuffleOutputGoneException => throw fetchFailure(e)
-    }
+    translateOutputGoneToFetchFailure(catalog.getColumnarBatchIterator(blockId, sparkTypes))
 
-  override def hasNext: Boolean =
-    try {
-      batches.hasNext
-    } catch {
-      case e: ShuffleOutputGoneException => throw fetchFailure(e)
-    }
+  override def hasNext: Boolean = translateOutputGoneToFetchFailure(batches.hasNext)
 
-  override def next(): ColumnarBatch =
-    try {
-      batches.next()
-    } catch {
-      case e: ShuffleOutputGoneException => throw fetchFailure(e)
-    }
+  override def next(): ColumnarBatch = translateOutputGoneToFetchFailure(batches.next())
 
-  // built only to be thrown, since its constructor marks the thread's task as fetch-failed
-  private def fetchFailure(e: ShuffleOutputGoneException): RapidsShuffleFetchFailedException =
-    new RapidsShuffleFetchFailedException(location, blockId.shuffleId, blockId.mapId, mapIndex,
-      blockId.reduceId, s"The cached shuffle output of $blockId is gone from this executor", e)
+  private def translateOutputGoneToFetchFailure[T](body: => T): T =
+    try {
+      body
+    } catch {
+      // built only here, since its constructor marks the thread's task as fetch-failed
+      case e: ShuffleOutputGoneException =>
+        throw new RapidsShuffleFetchFailedException(location, blockId.shuffleId, blockId.mapId,
+          mapIndex, blockId.reduceId,
+          s"The cached shuffle output of $blockId is gone from this executor", e)
+    }
 }
