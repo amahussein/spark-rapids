@@ -38,7 +38,7 @@ import org.apache.spark.shuffle.rapids.ShuffleOutputGoneException
 import org.apache.spark.sql.rapids.execution.TrampolineUtil
 import org.apache.spark.sql.types.{DataType, IntegerType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.storage.{BlockId, BlockManagerId, ShuffleBlockId}
+import org.apache.spark.storage.{BlockId, BlockManagerId, ShuffleBlockBatchId, ShuffleBlockId}
 
 /** RapidsCachingReader reading blocks cached on its own executor, from a real catalog. */
 class RapidsCachingReaderSuite extends RmmSparkRetrySuiteBase with MockitoSugar {
@@ -62,8 +62,9 @@ class RapidsCachingReaderSuite extends RmmSparkRetrySuiteBase with MockitoSugar 
 
   private def read(
       catalog: ShuffleBufferCatalog,
-      context: TaskContext = TaskContext.empty()): Iterator[Product2[Int, ColumnarBatch]] = {
-    val blocks: collection.Seq[(BlockId, Long, Int)] = Seq((block, 100L, mapIndex))
+      context: TaskContext = TaskContext.empty(),
+      blockId: BlockId = block): Iterator[Product2[Int, ColumnarBatch]] = {
+    val blocks: collection.Seq[(BlockId, Long, Int)] = Seq((blockId, 100L, mapIndex))
     new RapidsCachingReader[Int, ColumnarBatch](new RapidsConf(new SparkConf), localId,
       Iterator((mapLocation, blocks)), context, mock[ShuffleReadMetricsReporter],
       None, catalog, sparkTypes).read()
@@ -75,13 +76,13 @@ class RapidsCachingReaderSuite extends RmmSparkRetrySuiteBase with MockitoSugar 
       it.foreach(record => record._2.close())
     }
 
-  /** Asserts that `e` names the block and comes from the catalog finding its output gone. */
-  private def assertOutputGone(e: FetchFailedException): Unit = {
+  /** Asserts that `e` names `gone` and comes from the catalog finding its output gone. */
+  private def assertOutputGone(e: FetchFailedException, gone: ShuffleBlockId = block): Unit = {
     // a reader that converted every NoSuchElementException would pass without this
     assert(e.getCause.isInstanceOf[ShuffleOutputGoneException], e.getCause)
     val failure = e.toTaskFailedReason.asInstanceOf[FetchFailed]
     assertResult(mapLocation)(failure.bmAddress)
-    assertResult((block.shuffleId, block.mapId, mapIndex, block.reduceId))(
+    assertResult((gone.shuffleId, gone.mapId, mapIndex, gone.reduceId))(
       (failure.shuffleId, failure.mapId, failure.mapIndex, failure.reduceId))
   }
 
@@ -133,6 +134,24 @@ class RapidsCachingReaderSuite extends RmmSparkRetrySuiteBase with MockitoSugar 
       }
       catalog.removeCachedHandles(Seq(second))
       assertOutputGone(fetchFailure(it))
+    }
+  }
+
+  test("a local read of a batch block ends in a fetch failure naming the reduce id whose " +
+      "output is gone") {
+    withCatalog { catalog =>
+      catalog.addContiguousTable(block, RapidsShuffleTestHelper.buildContiguousTable(10), -1)
+      val gone = ShuffleBlockId(block.shuffleId, block.mapId, block.reduceId + 1)
+      catalog.removeCachedHandles(Seq(
+        catalog.addContiguousTable(gone, RapidsShuffleTestHelper.buildContiguousTable(20), -1)))
+      // Spark's end is exclusive, so this batch is the two reduce ids above
+      val batch =
+        ShuffleBlockBatchId(block.shuffleId, block.mapId, block.reduceId, gone.reduceId + 1)
+      val it = read(catalog, blockId = batch)
+      withResource(it.next()._2) { first =>
+        assertResult(10)(first.numRows())
+      }
+      assertOutputGone(fetchFailure(it), gone)
     }
   }
 
