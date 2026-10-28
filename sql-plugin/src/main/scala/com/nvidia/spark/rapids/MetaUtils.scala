@@ -326,7 +326,8 @@ object ShuffleMetadata extends Logging{
     val fbb = new FlatBufferBuilder(1024, bbFactory)
     val tableOffsets = copyTables(fbb, tables)
     val tableMetasOffset = MetadataResponse.createTableMetasVector(fbb, tableOffsets)
-    val finIndex = MetadataResponse.createMetadataResponse(fbb, tableMetasOffset)
+    // 0 leaves the error out, which adds no bytes to the response
+    val finIndex = MetadataResponse.createMetadataResponse(fbb, tableMetasOffset, 0)
     fbb.finish(finIndex)
     fbb.dataBuffer()
   }

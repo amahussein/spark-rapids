@@ -39,7 +39,8 @@ import org.mockito.stubbing.Answer
 import org.openucx.jucx.UcxCallback
 
 import org.apache.spark.{SparkConf, SparkEnv}
-import org.apache.spark.shuffle.rapids.RapidsShuffleSendPrepareException
+import org.apache.spark.shuffle.rapids.{RapidsShuffleSendPrepareException,
+  ShuffleOutputGoneException}
 import org.apache.spark.sql.rapids.RapidsShuffleInternalManagerBase
 import org.apache.spark.storage.ShuffleBlockBatchId
 
@@ -1929,5 +1930,60 @@ class RapidsShuffleServerSuite extends RapidsShuffleTestHelper {
       RapidsShuffleServer.describeRequests(Seq(request(1), request(2))))
     assertResult((1L to 5L).map(named).mkString(", ") + " and 2 more")(
       RapidsShuffleServer.describeRequests((1L to 7L).map(request)))
+  }
+
+  /** A metadata request for `blocks`, as it reaches the server. */
+  private def makeMetadataTx(blocks: ShuffleBlockBatchId*): Transaction = {
+    val tx = mock[Transaction]
+    when(tx.getStatus).thenReturn(TransactionStatus.Success)
+    // the message can be taken once, as from a UCX transaction
+    when(tx.releaseMessage()).thenReturn(new MetadataTransportBuffer(
+      new RefCountedDirectByteBuffer(ShuffleMetadata.buildShuffleMetadataRequest(blocks))))
+      .thenThrow(new NoSuchElementException("None.get"))
+    tx
+  }
+
+  /**
+   * Starts `server` and returns its metadata request handler. The handler runs a request on the
+   * calling thread, through the server's mocked metadata executor.
+   */
+  private def startForMetadata(
+      server: RapidsShuffleServer,
+      serverConnection: ServerConnection): TransactionCallback = {
+    server.start()
+    val onRequest = ArgumentCaptor.forClass(classOf[TransactionCallback])
+    verify(serverConnection, times(1)).registerRequestHandler(
+      ArgumentMatchers.eq(MessageType.MetadataRequest), onRequest.capture())
+    onRequest.getValue
+  }
+
+  test("a metadata request for output that is gone is answered") {
+    val (found, missing) = (ShuffleBlockBatchId(1, 7L, 2, 2), ShuffleBlockBatchId(1, 8L, 2, 2))
+    val gone = "unknown shuffle block shuffle_1_8_2"
+    val requestHandler = mock[RapidsShuffleRequestHandler]
+    // the first block's tables are found before the second block's lookup fails
+    val tableMeta = MetaUtils.buildTableMeta(1, 456, ByteBuffer.allocate(8), 100)
+    when(requestHandler.getShuffleBufferMetas(ArgumentMatchers.eq(found)))
+      .thenReturn(Seq(tableMeta))
+    when(requestHandler.getShuffleBufferMetas(ArgumentMatchers.eq(missing)))
+      .thenThrow(new ShuffleOutputGoneException(gone))
+    val serverConnection = mock[ServerConnection]
+    val onRequest = startForMetadata(newServer(requestHandler, serverConnection), serverConnection)
+    val requestTx = makeMetadataTx(found, missing)
+    onRequest(requestTx)
+
+    val reply = ArgumentCaptor.forClass(classOf[ByteBuffer])
+    val sent = ArgumentCaptor.forClass(classOf[TransactionCallback])
+    verify(requestTx, times(1)).respond(reply.capture(), sent.capture())
+    verify(requestTx, times(1)).close()
+    // read before the send's callback releases the reply
+    val response = ShuffleMetadata.getMetadataResponse(reply.getValue)
+    // none of the found tables, so that an older requester cannot read part of its data
+    assertResult(0)(response.tableMetasLength())
+    assertResult(
+      s"${RapidsShuffleServer.failureReason(BufferSendState.MissingOutput)}: $gone")(
+      response.error().reason())
+    // releases the reply as the transport would, and throws if the server closed it already
+    sent.getValue.apply(mock[Transaction])
   }
 }
