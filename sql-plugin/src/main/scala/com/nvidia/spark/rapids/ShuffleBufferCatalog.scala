@@ -298,10 +298,8 @@ class ShuffleBufferCatalog(val mapIdsCanRepeat: Boolean = false) extends Logging
     val bufferIDs = blockIdToBuffersIds(blockId)
     bufferIDs.iterator.map { bId =>
       GpuSemaphore.acquireIfNecessary(TaskContext.get)
-      // Uses _1 and _2 because val (handle, meta) = ... would allocate a new Tuple2 per batch
-      val entry = liveEntry(bId)
-      val meta = entry._2
-      entry._1.map { handle =>
+      val (maybeHandle, meta) = liveEntry(bId)
+      maybeHandle.map { handle =>
         val materialized = try {
           handle.materialize()
         } catch {
