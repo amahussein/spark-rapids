@@ -521,10 +521,15 @@ object GpuBroadcastNestedLoopJoinExecBase {
       joinTime: GpuMetric): Iterator[ColumnarBatch] = {
     (joinType, streamAttrs.isEmpty) match {
       case (_: InnerLike, false) =>
-        // Each stream row that meets the condition joins every build row.
-        val matchedStream = stream.map { scb =>
-          withResource(filterAndClose(scb, boundCondition)) {
-            LazySpillableColumnarBatch(_, "stream_batch")
+        // Each stream row that meets the condition joins every build row. Spark tests the
+        // condition only against a build row, so an empty build leaves the stream unfiltered.
+        val matchedStream = if (builtBatch.numRows == 0) {
+          stream
+        } else {
+          stream.map { scb =>
+            withResource(filterAndClose(scb, boundCondition)) {
+              LazySpillableColumnarBatch(_, "stream_batch")
+            }
           }
         }
         new CrossJoinIterator(builtBatch, matchedStream, targetSize, sizeEstimateThreshold,
