@@ -29,7 +29,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.rapids.GpuGreaterThan
 import org.apache.spark.sql.rapids.execution.{GpuBroadcastNestedLoopJoinExec,
   GpuBroadcastNestedLoopJoinExecBase}
-import org.apache.spark.sql.types.{BooleanType, IntegerType}
+import org.apache.spark.sql.types.{BooleanType, DataType, IntegerType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 class BroadcastNestedLoopJoinSuite extends SparkQueryCompareTestSuite {
@@ -78,6 +78,14 @@ class BroadcastNestedLoopJoinSuite extends SparkQueryCompareTestSuite {
     GpuBoundReference(0, IntegerType, nullable = true)(ExprId(0), "a"),
     GpuLiteral(5, IntegerType))
   private val existsAttr = AttributeReference("exists", BooleanType, nullable = false)()
+
+  // Fails the test if the join evaluates it.
+  private case class FailIfEvaluated() extends GpuLeafExpression {
+    override def dataType: DataType = BooleanType
+    override def nullable: Boolean = false
+    override def columnarEval(batch: ColumnarBatch): GpuColumnVector =
+      fail(s"the join evaluated its condition over ${batch.numRows()} rows")
+  }
 
   // The join types and build sides that nestedLoopJoin handles with a condition
   private val joinShapes = Seq[(String, JoinType, GpuBuildSide)](
@@ -167,6 +175,19 @@ class BroadcastNestedLoopJoinSuite extends SparkQueryCompareTestSuite {
           assertResult(sorted(expected))(sorted(actual))
         }
       }
+    }
+
+    test(s"$name $buildSide nested loop join skips the condition over an empty rows-only build") {
+      // Spark tests the condition only against a build row.
+      val stream = Seq[Integer](null, 0, 6)
+      val expected = joinType match {
+        case _: InnerLike | LeftSemi => Seq.empty
+        case LeftOuter | RightOuter | LeftAnti => stream.map(Seq(_))
+        case _ => stream.map(v => Seq(v, false))
+      }
+      val actual = nestedLoopJoin(joinType, buildSide, new ColumnarBatch(Array.empty, 0),
+        Seq(() => intBatch(stream)), streamHasColumns = true, boundCondition = FailIfEvaluated())
+      assertResult(sorted(expected))(sorted(actual))
     }
 
     test(s"$name $buildSide nested loop join accepts a rows-only stream") {
