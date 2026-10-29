@@ -155,7 +155,7 @@ class RapidsShuffleIteratorSuite extends RapidsShuffleTestHelper {
     }
   }
 
-  test("a timeout while waiting for batches raises a fetch failure") {
+  test("a timeout while waiting for batches throws RapidsShuffleTimeoutException") {
     val taskId = 1
     try {
       RmmSpark.currentThreadIsDedicatedToTask(taskId)
